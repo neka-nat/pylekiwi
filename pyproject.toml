@@ -1,0 +1,23 @@
+[project]
+name = "pylekiwi"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "neka-nat", email = "nekanat.stock@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "eclipse-zenoh>=1.5.1",
+    "loguru>=0.7.3",
+    "numpy>=2.3.3",
+    "pydantic>=2.11.10",
+    "rustypot>=1.3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[project.scripts]
+launch-lekiwi-host = "pylekiwi.commands.launch_host_controller:main"
