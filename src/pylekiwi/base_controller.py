@@ -28,6 +28,10 @@ class BaseController:
         for i in (self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID):
             self.motor_controller.write_torque_enable(i, True)
 
+    def disable_torque(self):
+        for i in (self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID):
+            self.motor_controller.write_torque_enable(i, False)
+
     @staticmethod
     def _saturate_radps(w_radps: np.ndarray, max_radps: float = 10.0) -> np.ndarray:
         m = np.max(np.abs(w_radps))
