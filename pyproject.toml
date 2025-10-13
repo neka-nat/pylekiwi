@@ -9,7 +9,8 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "eclipse-zenoh>=1.5.1",
-    "kinpy>=0.5.3",
+    "gunicorn>=23.0.0",
+    "kinpy>=0.5.4",
     "loguru>=0.7.3",
     "mesop>=1.1.0",
     "numpy>=2.3.3",

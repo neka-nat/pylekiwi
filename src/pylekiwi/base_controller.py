@@ -22,6 +22,12 @@ class BaseController:
                 baudrate=settings.baudrate,
                 timeout=settings.timeout,
             )
+        elif isinstance(motor_controller, Settings):
+            motor_controller = Sts3215PyController(
+                serial_port=motor_controller.serial_port,
+                baudrate=motor_controller.baudrate,
+                timeout=motor_controller.timeout,
+            )
         self.motor_controller = motor_controller
 
     def set_torque(self):
@@ -84,7 +90,7 @@ class BaseController:
         wheel_radps = self._body_to_wheel_radps(
             action.x_vel, action.y_vel, action.theta_deg_vel
         )
-        logger.debug(f"wheel_radps: {wheel_radps}")
+        logger.debug(f"Wheel radps: {wheel_radps}")
         self.motor_controller.sync_write_goal_speed(
             [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID],
             wheel_radps  # rad/s

@@ -14,7 +14,7 @@ _MODEL_FILE = os.path.join(os.path.dirname(__file__), "data/SO101/so101_new_cali
 
 
 class ArmController:
-    JOINT_IDS = [1, 2, 3, 4, 5]
+    JOINT_IDS = (1, 2, 3, 4, 5)
     GRIPPER_ID = 6
 
     def __init__(self, motor_controller: Sts3215PyController | Settings | None = None):
@@ -25,34 +25,48 @@ class ArmController:
                 baudrate=settings.baudrate,
                 timeout=settings.timeout,
             )
+        elif isinstance(motor_controller, Settings):
+            motor_controller = Sts3215PyController(
+                serial_port=motor_controller.serial_port,
+                baudrate=motor_controller.baudrate,
+                timeout=motor_controller.timeout,
+            )
         self.motor_controller = motor_controller
 
-        self.chain = build_serial_chain_from_mjcf(
-            open(_MODEL_FILE, "rb").read(),
-            "gripper",
-            model_dir=os.path.dirname(_MODEL_FILE),
-        )
+        # self.chain = build_serial_chain_from_mjcf(
+        #     open(_MODEL_FILE, "rb").read(),
+        #     "gripper",
+        #     model_dir=os.path.dirname(_MODEL_FILE),
+        # )
 
     def set_torque(self):
         for i in self.JOINT_IDS:
             self.motor_controller.write_torque_enable(i, True)
+        self.motor_controller.write_torque_enable(self.GRIPPER_ID, True)
+        all_ids = list(self.JOINT_IDS) + [self.GRIPPER_ID]
+        self.motor_controller.sync_write_maximum_acceleration(
+            all_ids, [600] * len(all_ids)
+        )
 
     def disable_torque(self):
         for i in self.JOINT_IDS:
             self.motor_controller.write_torque_enable(i, False)
+        self.motor_controller.write_torque_enable(self.GRIPPER_ID, False)
 
     def get_current_state(self) -> ArmState:
-        joint_angles = self.motor_controller.sync_read_position(self.JOINT_IDS + [self.GRIPPER_ID])
+        all_ids = list(self.JOINT_IDS) + [self.GRIPPER_ID]
+        joint_angles = self.motor_controller.sync_read_present_position(all_ids)
         gripper_position = joint_angles[-1]
         joint_angles = joint_angles[:-1]
-        return ArmState(joint_angles=joint_angles, gripper_position=gripper_position)
+        logger.debug(f"Joint angles: {joint_angles}, Gripper position: {gripper_position}")
+        return ArmState(joint_angles=tuple(joint_angles), gripper_position=gripper_position)
 
     def send_joint_action(self, action: ArmJointCommand):
-        target_ids = self.JOINT_IDS
+        target_ids = list(self.JOINT_IDS)
         if action.gripper_position is not None:
             target_ids += [self.GRIPPER_ID]
-        command = action.joint_angles
+        command = list(action.joint_angles)
         if action.gripper_position is not None:
             command += [action.gripper_position]
+        logger.debug(f"Arm command: {command}")
         self.motor_controller.sync_write_goal_position(target_ids, command)
-
