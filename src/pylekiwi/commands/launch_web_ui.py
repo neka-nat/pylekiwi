@@ -1,6 +1,7 @@
 import argparse
 import subprocess
 
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=8080)
@@ -8,6 +9,13 @@ def main() -> int:
     args = parser.parse_args()
     port = args.port
     proc = subprocess.run(
-        ["gunicorn", "--bind", f"0.0.0.0:{port}", "--env", f"LEKIWI_SERIAL_PORT={args.serial_port}", "pylekiwi.commands.web_ui:me"]
+        [
+            "gunicorn",
+            "--bind",
+            f"0.0.0.0:{port}",
+            "--env",
+            f"LEKIWI_SERIAL_PORT={args.serial_port}",
+            "pylekiwi.commands.web_ui:me",
+        ]
     )
     return proc.returncode

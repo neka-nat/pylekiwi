@@ -2,7 +2,7 @@ import numpy as np
 from loguru import logger
 from rustypot import Sts3215PyController
 
-from pylekiwi.models import BaseCommand
+from pylekiwi.models import BaseCommand, BaseState
 from pylekiwi.settings import Settings
 
 
@@ -16,7 +16,11 @@ class BaseController:
 
     def __init__(self, motor_controller: Sts3215PyController | Settings | None = None):
         if motor_controller is None:
-            settings = Settings() if not isinstance(motor_controller, Settings) else motor_controller
+            settings = (
+                Settings()
+                if not isinstance(motor_controller, Settings)
+                else motor_controller
+            )
             motor_controller = Sts3215PyController(
                 serial_port=settings.serial_port,
                 baudrate=settings.baudrate,
@@ -51,7 +55,7 @@ class BaseController:
         vtheta_deg: float,  # deg/s
         wheel_radius: float = 0.05,
         base_radius: float = 0.125,
-        max_radps: float = 10.0,   # 速度上限（rad/s）
+        max_radps: float = 10.0,  # 速度上限（rad/s）
     ) -> list[float]:
         # 角速度を rad/s に
         omega = np.deg2rad(vtheta_deg)
@@ -76,27 +80,37 @@ class BaseController:
         right_wheel_radps: float,
         wheel_radius: float = 0.05,
         base_radius: float = 0.125,
-    ) -> BaseCommand:
+    ) -> BaseState:
         phi = np.deg2rad(cls._PHI_DEG)  # [LEFT, BACK, RIGHT]
         M = np.column_stack((-np.sin(phi), np.cos(phi), np.full(3, base_radius)))
         # 角速度 -> 接線速度（m/s）
-        wheel_linear = wheel_radius * np.array([left_wheel_radps, back_wheel_radps, right_wheel_radps])
+        wheel_linear = wheel_radius * np.array(
+            [left_wheel_radps, back_wheel_radps, right_wheel_radps]
+        )
         # 逆運動学
         v = np.linalg.inv(M) @ wheel_linear
         vx, vy, omega = v
-        return BaseCommand(x_vel=vx, y_vel=vy, theta_deg_vel=np.rad2deg(omega))
+        return BaseState(x_vel=vx, y_vel=vy, theta_deg_vel=np.rad2deg(omega))
+
+    def get_current_state(self) -> BaseState:
+        wheel_radps = self.motor_controller.sync_read_present_speed(
+            [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID]
+        )
+        state = self._wheel_radps_to_body(wheel_radps)
+        logger.debug(f"Base state: {state}")
+        return state
 
     def send_action(self, action: BaseCommand):
         wheel_radps = self._body_to_wheel_radps(
             action.x_vel, action.y_vel, action.theta_deg_vel
         )
-        logger.debug(f"Wheel radps: {wheel_radps}")
         self.motor_controller.sync_write_goal_speed(
             [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID],
-            wheel_radps  # rad/s
+            wheel_radps,  # rad/s
         )
 
     def stop(self):
         self.motor_controller.sync_write_goal_speed(
-            [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID], [0.0, 0.0, 0.0]
+            [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID],
+            [0.0, 0.0, 0.0],
         )

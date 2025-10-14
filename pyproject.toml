@@ -23,6 +23,12 @@ dependencies = [
 requires = ["uv_build>=0.8.15,<0.9.0"]
 build-backend = "uv_build"
 
+[dependency-groups]
+dev = [
+    "ruff>=0.14.0",
+]
+
 [project.scripts]
 launch-lekiwi-host = "pylekiwi.commands.launch_host_controller:main"
 launch-lekiwi-webui = "pylekiwi.commands.launch_web_ui:main"
+launch-lekiwi-client-leader = "pylekiwi.commands.launch_leader:main"

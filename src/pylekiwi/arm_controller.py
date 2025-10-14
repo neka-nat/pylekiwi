@@ -19,7 +19,11 @@ class ArmController:
 
     def __init__(self, motor_controller: Sts3215PyController | Settings | None = None):
         if motor_controller is None:
-            settings = Settings() if not isinstance(motor_controller, Settings) else motor_controller
+            settings = (
+                Settings()
+                if not isinstance(motor_controller, Settings)
+                else motor_controller
+            )
             motor_controller = Sts3215PyController(
                 serial_port=settings.serial_port,
                 baudrate=settings.baudrate,
@@ -43,10 +47,6 @@ class ArmController:
         for i in self.JOINT_IDS:
             self.motor_controller.write_torque_enable(i, True)
         self.motor_controller.write_torque_enable(self.GRIPPER_ID, True)
-        all_ids = list(self.JOINT_IDS) + [self.GRIPPER_ID]
-        self.motor_controller.sync_write_maximum_acceleration(
-            all_ids, [600] * len(all_ids)
-        )
 
     def disable_torque(self):
         for i in self.JOINT_IDS:
@@ -58,8 +58,12 @@ class ArmController:
         joint_angles = self.motor_controller.sync_read_present_position(all_ids)
         gripper_position = joint_angles[-1]
         joint_angles = joint_angles[:-1]
-        logger.debug(f"Joint angles: {joint_angles}, Gripper position: {gripper_position}")
-        return ArmState(joint_angles=tuple(joint_angles), gripper_position=gripper_position)
+        logger.debug(
+            f"Joint angles: {joint_angles}, Gripper position: {gripper_position}"
+        )
+        return ArmState(
+            joint_angles=tuple(joint_angles), gripper_position=gripper_position
+        )
 
     def send_joint_action(self, action: ArmJointCommand):
         target_ids = list(self.JOINT_IDS)
@@ -68,5 +72,4 @@ class ArmController:
         command = list(action.joint_angles)
         if action.gripper_position is not None:
             command += [action.gripper_position]
-        logger.debug(f"Arm command: {command}")
         self.motor_controller.sync_write_goal_position(target_ids, command)

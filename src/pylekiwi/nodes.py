@@ -7,10 +7,8 @@ from rustypot import Sts3215PyController
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
 from pylekiwi.models import ArmJointCommand, BaseCommand, LekiwiCommand
-from pylekiwi.settings import Settings
-
-
-_COMMAND_KEY = "lekiwi/command"
+from pylekiwi.settings import Settings, constants
+from pylekiwi.smoother import AccelLimitedSmoother
 
 
 class HostControllerNode:
@@ -23,22 +21,49 @@ class HostControllerNode:
         )
         self._base_controller = BaseController(motor_controller=motor_controller)
         self._arm_controller = ArmController(motor_controller=motor_controller)
+        self._target_arm_command: ArmJointCommand | None = None
+        self._dt = constants.DT
 
     def _listener(self, msg: zenoh.Message) -> zenoh.Reply:
         command: LekiwiCommand = LekiwiCommand.from_json(msg.payload)
+        logger.debug(f"Received command: {command}")
         if command.base_command is not None:
             self._base_controller.send_action(command.base_command)
-        if command.arm_command is not None and command.arm_command.command_type == "joint":
-            self._arm_controller.send_joint_action(command.arm_command)
+        if (
+            command.arm_command is not None
+            and command.arm_command.command_type == "joint"
+        ):
+            self._target_arm_command = command.arm_command
         return zenoh.Reply.ok()
 
     def run(self):
         with zenoh.open() as session:
-            sub = session.declare_subscriber(_COMMAND_KEY, self._listener)
+            sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
+            try:
+                current_arm_state = self._arm_controller.get_current_state()
+                current_arm_command = ArmJointCommand(
+                    joint_angles=current_arm_state.joint_angles,
+                    gripper_position=current_arm_state.gripper_position,
+                )
+                self._arm_smoother = AccelLimitedSmoother(
+                    q=current_arm_command,
+                    v_max=constants.JOINT_V_MAX,
+                    a_max=constants.JOINT_A_MAX,
+                    dt=self._dt,
+                )
+                self._target_arm_command = current_arm_command
+            except Exception as e:
+                logger.error(f"Error initializing arm smoother: {e}")
+                sub.undeclare()
+                return
             logger.info("Starting host controller node...")
             try:
                 while True:
-                    time.sleep(0.01)
+                    start_time = time.time()
+                    if self._target_arm_command is not None:
+                        q, _ = self._arm_smoother.step(self._target_arm_command)
+                        self._arm_controller.send_joint_action(q)
+                    time.sleep(self._dt - (time.time() - start_time))
             except KeyboardInterrupt:
                 pass
             finally:
@@ -48,7 +73,7 @@ class HostControllerNode:
 class ClientControllerNode:
     def __init__(self):
         self.session = zenoh.open()
-        self.publisher = self.session.declare_publisher(_COMMAND_KEY)
+        self.publisher = self.session.declare_publisher(constants.COMMAND_KEY)
 
     def send_command(self, command: LekiwiCommand):
         self.publisher.put(command.to_json())
@@ -58,3 +83,23 @@ class ClientControllerNode:
 
     def send_arm_joint_command(self, command: ArmJointCommand):
         self.send_command(LekiwiCommand(arm_command=command))
+
+
+class LeaderControllerNode(ClientControllerNode):
+    def __init__(self):
+        super().__init__()
+        self.arm_controller = ArmController()
+
+    def send_leader_command(self):
+        arm_state = self.arm_controller.get_current_state()
+        arm_command = ArmJointCommand(
+            joint_angles=arm_state.joint_angles,
+            gripper_position=arm_state.gripper_position,
+        )
+        self.send_arm_joint_command(arm_command)
+
+    def run(self):
+        while True:
+            start_time = time.time()
+            self.send_leader_command()
+            time.sleep(constants.DT - (time.time() - start_time))
