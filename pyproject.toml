@@ -1,7 +1,7 @@
 [project]
 name = "pylekiwi"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Python package for controlling the LeKiwi robot"
 readme = "README.md"
 authors = [
     { name = "neka-nat", email = "nekanat.stock@gmail.com" }
