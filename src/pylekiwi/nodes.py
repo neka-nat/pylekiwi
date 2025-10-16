@@ -24,8 +24,8 @@ class HostControllerNode:
         self._target_arm_command: ArmJointCommand | None = None
         self._dt = constants.DT
 
-    def _listener(self, msg: zenoh.Message) -> zenoh.Reply:
-        command: LekiwiCommand = LekiwiCommand.from_json(msg.payload)
+    def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
+        command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
         logger.debug(f"Received command: {command}")
         if command.base_command is not None:
             self._base_controller.send_action(command.base_command)
@@ -34,10 +34,9 @@ class HostControllerNode:
             and command.arm_command.command_type == "joint"
         ):
             self._target_arm_command = command.arm_command
-        return zenoh.Reply.ok()
 
     def run(self):
-        with zenoh.open() as session:
+        with zenoh.open(zenoh.Config()) as session:
             sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
             try:
                 current_arm_state = self._arm_controller.get_current_state()
@@ -72,11 +71,11 @@ class HostControllerNode:
 
 class ClientControllerNode:
     def __init__(self):
-        self.session = zenoh.open()
+        self.session = zenoh.open(zenoh.Config())
         self.publisher = self.session.declare_publisher(constants.COMMAND_KEY)
 
     def send_command(self, command: LekiwiCommand):
-        self.publisher.put(command.to_json())
+        self.publisher.put(command.model_dump_json())
 
     def send_base_command(self, command: BaseCommand):
         self.send_command(LekiwiCommand(base_command=command))
@@ -86,9 +85,15 @@ class ClientControllerNode:
 
 
 class LeaderControllerNode(ClientControllerNode):
-    def __init__(self):
+    def __init__(self, settings: Settings | None = None):
         super().__init__()
-        self.arm_controller = ArmController()
+        settings = settings or Settings()
+        motor_controller = Sts3215PyController(
+            serial_port=settings.serial_port,
+            baudrate=settings.baudrate,
+            timeout=settings.timeout,
+        )
+        self.arm_controller = ArmController(motor_controller=motor_controller)
 
     def send_leader_command(self):
         arm_state = self.arm_controller.get_current_state()
