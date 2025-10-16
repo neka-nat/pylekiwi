@@ -1,6 +1,6 @@
 [project]
 name = "pylekiwi"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python package for controlling the LeKiwi robot"
 readme = "README.md"
 authors = [
@@ -17,6 +17,7 @@ dependencies = [
     "opencv-python-headless>=4.11.0.86",
     "pydantic>=2.11.10",
     "rustypot>=1.3.0",
+    "typer>=0.19.2",
 ]
 
 [build-system]
@@ -29,6 +30,4 @@ dev = [
 ]
 
 [project.scripts]
-launch-lekiwi-host = "pylekiwi.commands.launch_host_controller:main"
-launch-lekiwi-webui = "pylekiwi.commands.launch_web_ui:main"
-launch-lekiwi-client-leader = "pylekiwi.commands.launch_leader:main"
+pylekiwi = "pylekiwi.commands.__main__:main"
