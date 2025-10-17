@@ -2,16 +2,21 @@ import time
 
 import zenoh
 from loguru import logger
+from pynput import keyboard
 from rustypot import Sts3215PyController
 
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
+from pylekiwi.key_listener import KeyListener
 from pylekiwi.models import ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
 
 
 class HostControllerNode:
+    """Host controller node that receives commands and sends them to the base and arm controllers.
+    """
+
     def __init__(self, settings: Settings | None = None):
         settings = settings or Settings()
         motor_controller = Sts3215PyController(
@@ -70,6 +75,9 @@ class HostControllerNode:
 
 
 class ClientControllerNode:
+    """Controller node that publishes commands to the host node.
+    """
+
     def __init__(self):
         self.session = zenoh.open(zenoh.Config())
         self.publisher = self.session.declare_publisher(constants.COMMAND_KEY)
@@ -85,6 +93,11 @@ class ClientControllerNode:
 
 
 class LeaderControllerNode(ClientControllerNode):
+    """Leader controller node that publishes commands to the host node.
+    Arm commands are based on the current leader's arm state.
+    Base commands are from the keyboard.
+    """
+
     def __init__(self, settings: Settings | None = None):
         super().__init__()
         settings = settings or Settings()
@@ -94,17 +107,25 @@ class LeaderControllerNode(ClientControllerNode):
             timeout=settings.timeout,
         )
         self.arm_controller = ArmController(motor_controller=motor_controller)
+        self.key_listener = KeyListener()
 
-    def send_leader_command(self):
+    def send_leader_command(self, base_command: BaseCommand | None = None):
         arm_state = self.arm_controller.get_current_state()
         arm_command = ArmJointCommand(
             joint_angles=arm_state.joint_angles,
             gripper_position=arm_state.gripper_position,
         )
-        self.send_arm_joint_command(arm_command)
+        if base_command is not None:
+            self.send_command(LekiwiCommand(base_command=base_command, arm_command=arm_command))
+        else:
+            self.send_arm_joint_command(arm_command)
 
     def run(self):
-        while True:
-            start_time = time.time()
-            self.send_leader_command()
-            time.sleep(constants.DT - (time.time() - start_time))
+        with keyboard.Listener(
+            on_press=self.key_listener.on_key_press,
+            on_release=self.key_listener.on_key_release,
+        ):
+            while True:
+                start_time = time.time()
+                self.send_leader_command(base_command=self.key_listener.current_command)
+                time.sleep(constants.DT - (time.time() - start_time))
