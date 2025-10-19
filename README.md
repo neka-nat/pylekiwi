@@ -2,6 +2,8 @@
 
 Python package for controlling the LeKiwi robot.
 
+![lekiwi](assets/lekiwi.jpg)
+
 ## Quick Start
 
 ### Web UI
@@ -15,6 +17,8 @@ uvx pylekiwi webui --serial-port <your_follower_robot_serial_port>
 ```
 
 Then, open a web browser and navigate to `http://<your robot ip>:8080` to see the web UI.
+
+![web ui](assets/webui.png)
 
 ### Leader and Follower Nodes
 
