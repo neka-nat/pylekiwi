@@ -176,17 +176,18 @@ class LeaderControllerNode(ClientControllerWithCameraNode):
         self.key_listener = KeyListener()
 
     def send_leader_command(self, base_command: BaseCommand | None = None):
-        if self.arm_controller is None:
-            return
-        arm_state = self.arm_controller.get_current_state()
-        arm_command = ArmJointCommand(
-            joint_angles=arm_state.joint_angles,
-            gripper_position=arm_state.gripper_position,
-        )
-        if base_command is not None:
-            self.send_command(LekiwiCommand(base_command=base_command, arm_command=arm_command))
-        else:
-            self.send_arm_joint_command(arm_command)
+        if self.arm_controller is not None:
+            arm_state = self.arm_controller.get_current_state()
+            arm_command = ArmJointCommand(
+                joint_angles=arm_state.joint_angles,
+                gripper_position=arm_state.gripper_position,
+            )
+            if base_command is not None:
+                self.send_command(LekiwiCommand(base_command=base_command, arm_command=arm_command))
+            else:
+                self.send_arm_joint_command(arm_command)
+        elif base_command is not None:
+            self.send_base_command(base_command)
 
     def run(self):
         from pynput import keyboard
