@@ -9,13 +9,11 @@ except ImportError:
     rr = None
 from collections import deque
 from loguru import logger
-from pynput import keyboard
 from rustypot import Sts3215PyController
 
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
 from pylekiwi.camera_controller import CameraController, encode_jpeg
-from pylekiwi.key_listener import KeyListener
 from pylekiwi.models import ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
@@ -88,7 +86,7 @@ class HostControllerNode:
                         pub_base_cam.put(encode_jpeg(base_frame))
                     if arm_frame is not None:
                         pub_arm_cam.put(encode_jpeg(arm_frame))
-                    time.sleep(self._dt - (time.time() - start_time))
+                    time.sleep(max(0, self._dt - (time.time() - start_time)))
             except KeyboardInterrupt:
                 pass
             finally:
@@ -168,6 +166,8 @@ class LeaderControllerNode(ClientControllerWithCameraNode):
             timeout=settings.timeout,
         )
         self.arm_controller = ArmController(motor_controller=motor_controller)
+
+        from pylekiwi.key_listener import KeyListener
         self.key_listener = KeyListener()
 
     def send_leader_command(self, base_command: BaseCommand | None = None):
@@ -182,6 +182,8 @@ class LeaderControllerNode(ClientControllerWithCameraNode):
             self.send_arm_joint_command(arm_command)
 
     def run(self):
+        from pynput import keyboard
+
         with keyboard.Listener(
             on_press=self.key_listener.on_key_press,
             on_release=self.key_listener.on_key_release,
@@ -190,4 +192,4 @@ class LeaderControllerNode(ClientControllerWithCameraNode):
                 start_time = time.time()
                 self.view_camera()
                 self.send_leader_command(base_command=self.key_listener.current_command)
-                time.sleep(constants.DT - (time.time() - start_time))
+                time.sleep(max(0, constants.DT - (time.time() - start_time)))
