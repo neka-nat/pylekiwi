@@ -1,6 +1,6 @@
 [project]
 name = "pylekiwi"
-version = "0.7.0"
+version = "0.8.0"
 description = "Python package for controlling the LeKiwi robot"
 readme = "README.md"
 authors = [
@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "eclipse-zenoh>=1.5.1",
     "gunicorn>=23.0.0",
-    "kinpy>=0.5.4",
+    "kinpy>=0.5.5",
     "loguru>=0.7.3",
     "mesop>=1.1.0",
     "numpy>=1.26.4",
