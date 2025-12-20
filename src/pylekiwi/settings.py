@@ -9,7 +9,7 @@ class Settings(BaseModel):
     timeout: float = 0.5
     base_camera_id: int | None = 0
     arm_camera_id: int | None = 2
-    view_camera: bool = False
+    view_camera: bool = True
     rerun_spawn: bool = True
 
 

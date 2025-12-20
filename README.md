@@ -35,4 +35,6 @@ Run the following command to start the leader node (client) on the remote machin
 ```bash
 sudo chmod 666 <your_leader_robot_serial_port>
 uvx pylekiwi leader --serial-port <your_leader_robot_serial_port>
+# Use rerun to view the camera frames
+uvx --from 'pylekiwi[client]' pylekiwi leader --serial-port <your_leader_robot_serial_port>
 ```

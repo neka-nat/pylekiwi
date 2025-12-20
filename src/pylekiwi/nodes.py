@@ -118,20 +118,22 @@ class ClientControllerWithCameraNode(ClientControllerNode):
     def __init__(self, settings: Settings):
         super().__init__()
         self.settings = settings
-        self.sub_base_cam = self.session.declare_subscriber(constants.BASE_CAMERA_KEY, self._listener)
-        self.sub_arm_cam = self.session.declare_subscriber(constants.ARM_CAMERA_KEY, self._listener)
+        self.sub_base_cam = self.session.declare_subscriber(constants.BASE_CAMERA_KEY, self._listener_base_cam)
+        self.sub_arm_cam = self.session.declare_subscriber(constants.ARM_CAMERA_KEY, self._listener_arm_cam)
         self.base_frame_queue = deque(maxlen=5)
         self.arm_frame_queue = deque(maxlen=5)
         if rr is not None and settings.view_camera:
-            rr.init("lekiwi_client_camera", "localhost", spawn=settings.rerun_spawn)
+            rr.init("lekiwi_client_camera", spawn=settings.rerun_spawn)
 
-    def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
+    def _listener_base_cam(self, msg: zenoh.Sample) -> zenoh.Reply:
         binary_data = bytes(msg.payload)
         image = cv2.imdecode(np.frombuffer(binary_data, dtype=np.uint8), cv2.IMREAD_COLOR)
-        if msg.key == constants.BASE_CAMERA_KEY:
-            self.base_frame_queue.append(image)
-        elif msg.key == constants.ARM_CAMERA_KEY:
-            self.arm_frame_queue.append(image)
+        self.base_frame_queue.append(image)
+
+    def _listener_arm_cam(self, msg: zenoh.Sample) -> zenoh.Reply:
+        binary_data = bytes(msg.payload)
+        image = cv2.imdecode(np.frombuffer(binary_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        self.arm_frame_queue.append(image)
 
     def get_base_frame(self) -> np.ndarray | None:
         return self.base_frame_queue[-1] if len(self.base_frame_queue) > 0 else None
@@ -146,9 +148,8 @@ class ClientControllerWithCameraNode(ClientControllerNode):
             and len(self.base_frame_queue) > 0
             and len(self.arm_frame_queue) > 0
         ):
-            rr.log_image("base_camera", self.base_frame_queue[-1])
-            rr.log_image("arm_camera", self.arm_frame_queue[-1])
-            rr.flush()
+            rr.log("base_camera", rr.Image(self.base_frame_queue[-1][..., ::-1]))
+            rr.log("arm_camera", rr.Image(self.arm_frame_queue[-1][..., ::-1]))
 
 
 class LeaderControllerNode(ClientControllerWithCameraNode):
@@ -160,17 +161,23 @@ class LeaderControllerNode(ClientControllerWithCameraNode):
     def __init__(self, settings: Settings | None = None):
         settings = settings or Settings()
         super().__init__(settings=settings)
-        motor_controller = Sts3215PyController(
-            serial_port=settings.serial_port,
-            baudrate=settings.baudrate,
-            timeout=settings.timeout,
-        )
-        self.arm_controller = ArmController(motor_controller=motor_controller)
+        try:
+            motor_controller = Sts3215PyController(
+                serial_port=settings.serial_port,
+                baudrate=settings.baudrate,
+                timeout=settings.timeout,
+            )
+            self.arm_controller = ArmController(motor_controller=motor_controller)
+        except OSError as e:
+            logger.error(f"Error initializing arm controller: {e}")
+            self.arm_controller = None
 
         from pylekiwi.key_listener import KeyListener
         self.key_listener = KeyListener()
 
     def send_leader_command(self, base_command: BaseCommand | None = None):
+        if self.arm_controller is None:
+            return
         arm_state = self.arm_controller.get_current_state()
         arm_command = ArmJointCommand(
             joint_angles=arm_state.joint_angles,
