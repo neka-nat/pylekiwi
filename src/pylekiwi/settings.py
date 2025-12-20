@@ -7,6 +7,10 @@ class Settings(BaseModel):
     serial_port: str = "/dev/ttyACM0"
     baudrate: int = 1000000
     timeout: float = 0.5
+    base_camera_id: int | None = 0
+    arm_camera_id: int | None = 2
+    view_camera: bool = False
+    rerun_spawn: bool = True
 
 
 class Constants(BaseModel):
@@ -20,6 +24,8 @@ class Constants(BaseModel):
         gripper_position=600.0,
     )
     COMMAND_KEY: str = "lekiwi/command"
+    BASE_CAMERA_KEY: str = "lekiwi/camera/base"
+    ARM_CAMERA_KEY: str = "lekiwi/camera/arm"
 
 
 constants = Constants()

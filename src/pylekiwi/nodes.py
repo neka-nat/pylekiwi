@@ -1,12 +1,20 @@
 import time
 
+import cv2
+import numpy as np
 import zenoh
+try:
+    import rerun as rr
+except ImportError:
+    rr = None
+from collections import deque
 from loguru import logger
 from pynput import keyboard
 from rustypot import Sts3215PyController
 
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
+from pylekiwi.camera_controller import CameraController, encode_jpeg
 from pylekiwi.key_listener import KeyListener
 from pylekiwi.models import ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
@@ -26,6 +34,10 @@ class HostControllerNode:
         )
         self._base_controller = BaseController(motor_controller=motor_controller)
         self._arm_controller = ArmController(motor_controller=motor_controller)
+        self._camera_controller = CameraController(
+            base_camera_id=settings.base_camera_id,
+            arm_camera_id=settings.arm_camera_id,
+        )
         self._target_arm_command: ArmJointCommand | None = None
         self._dt = constants.DT
 
@@ -43,6 +55,8 @@ class HostControllerNode:
     def run(self):
         with zenoh.open(zenoh.Config()) as session:
             sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
+            pub_base_cam = session.declare_publisher(constants.BASE_CAMERA_KEY)
+            pub_arm_cam = session.declare_publisher(constants.ARM_CAMERA_KEY)
             try:
                 current_arm_state = self._arm_controller.get_current_state()
                 current_arm_command = ArmJointCommand(
@@ -67,6 +81,13 @@ class HostControllerNode:
                     if self._target_arm_command is not None:
                         q, _ = self._arm_smoother.step(self._target_arm_command)
                         self._arm_controller.send_joint_action(q)
+                    # Publish camera frames
+                    base_frame = self._camera_controller.get_base_frame()
+                    arm_frame = self._camera_controller.get_arm_frame()
+                    if base_frame is not None:
+                        pub_base_cam.put(encode_jpeg(base_frame))
+                    if arm_frame is not None:
+                        pub_arm_cam.put(encode_jpeg(arm_frame))
                     time.sleep(self._dt - (time.time() - start_time))
             except KeyboardInterrupt:
                 pass
@@ -92,15 +113,55 @@ class ClientControllerNode:
         self.send_command(LekiwiCommand(arm_command=command))
 
 
-class LeaderControllerNode(ClientControllerNode):
+class ClientControllerWithCameraNode(ClientControllerNode):
+    """Controller node that publishes commands to the host node and receives camera frames.
+    """
+
+    def __init__(self, settings: Settings):
+        super().__init__()
+        self.settings = settings
+        self.sub_base_cam = self.session.declare_subscriber(constants.BASE_CAMERA_KEY, self._listener)
+        self.sub_arm_cam = self.session.declare_subscriber(constants.ARM_CAMERA_KEY, self._listener)
+        self.base_frame_queue = deque(maxlen=5)
+        self.arm_frame_queue = deque(maxlen=5)
+        if rr is not None and settings.view_camera:
+            rr.init("lekiwi_client_camera", "localhost", spawn=settings.rerun_spawn)
+
+    def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
+        binary_data = bytes(msg.payload)
+        image = cv2.imdecode(np.frombuffer(binary_data, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if msg.key == constants.BASE_CAMERA_KEY:
+            self.base_frame_queue.append(image)
+        elif msg.key == constants.ARM_CAMERA_KEY:
+            self.arm_frame_queue.append(image)
+
+    def get_base_frame(self) -> np.ndarray | None:
+        return self.base_frame_queue[-1] if len(self.base_frame_queue) > 0 else None
+
+    def get_arm_frame(self) -> np.ndarray | None:
+        return self.arm_frame_queue[-1] if len(self.arm_frame_queue) > 0 else None
+
+    def view_camera(self):
+        if (
+            rr is not None
+            and self.settings.view_camera
+            and len(self.base_frame_queue) > 0
+            and len(self.arm_frame_queue) > 0
+        ):
+            rr.log_image("base_camera", self.base_frame_queue[-1])
+            rr.log_image("arm_camera", self.arm_frame_queue[-1])
+            rr.flush()
+
+
+class LeaderControllerNode(ClientControllerWithCameraNode):
     """Leader controller node that publishes commands to the host node.
     Arm commands are based on the current leader's arm state.
     Base commands are from the keyboard.
     """
 
     def __init__(self, settings: Settings | None = None):
-        super().__init__()
         settings = settings or Settings()
+        super().__init__(settings=settings)
         motor_controller = Sts3215PyController(
             serial_port=settings.serial_port,
             baudrate=settings.baudrate,
@@ -127,5 +188,6 @@ class LeaderControllerNode(ClientControllerNode):
         ):
             while True:
                 start_time = time.time()
+                self.view_camera()
                 self.send_leader_command(base_command=self.key_listener.current_command)
                 time.sleep(constants.DT - (time.time() - start_time))

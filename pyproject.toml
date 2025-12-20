@@ -25,6 +25,11 @@ dependencies = [
 requires = ["uv_build>=0.8.15,<0.9.0"]
 build-backend = "uv_build"
 
+[project.optional-dependencies]
+client = [
+    "rerun-sdk>=0.28.1",
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.14.0",
