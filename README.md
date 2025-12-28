@@ -1,4 +1,5 @@
 # pylekiwi
+[![PyPI version](https://badge.fury.io/py/pylekiwi.svg)](https://badge.fury.io/py/pylekiwi)
 
 Python package for controlling the LeKiwi robot.
 
