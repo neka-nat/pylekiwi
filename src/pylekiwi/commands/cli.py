@@ -1,6 +1,6 @@
 from typer import Typer
 
-from pylekiwi.commands import launch_host_controller, launch_leader, launch_web_ui
+from pylekiwi.commands import launch_client, launch_host_controller, launch_leader, launch_web_ui
 
 
 app = Typer(help="pylekiwi: Python package for controlling the LeKiwi robot", no_args_is_help=True)
@@ -9,3 +9,4 @@ app = Typer(help="pylekiwi: Python package for controlling the LeKiwi robot", no
 app.add_typer(launch_host_controller.app, name="host")
 app.add_typer(launch_leader.app, name="leader")
 app.add_typer(launch_web_ui.app, name="webui")
+app.add_typer(launch_client.app, name="client")

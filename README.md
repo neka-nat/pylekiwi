@@ -21,7 +21,7 @@ Then, open a web browser and navigate to `http://<your robot ip>:8080` to see th
 
 ![web ui](assets/webui.png)
 
-### Leader and Follower Nodes
+### Leader and Follower/Client Nodes
 
 Run the following command to start the follower node (host) on the robot (Respberry Pi):
 
@@ -35,7 +35,20 @@ Run the following command to start the leader node (client) on the remote machin
 
 ```bash
 sudo chmod 666 <your_leader_robot_serial_port>
-uvx pylekiwi leader --serial-port <your_leader_robot_serial_port>
+uvx --from 'pylekiwi[client]' pylekiwi leader --serial-port <your_leader_robot_serial_port>
 # Use rerun to view the camera frames
 uvx --from 'pylekiwi[client]' pylekiwi leader --serial-port <your_leader_robot_serial_port>
+```
+
+Or use the following command to start the leader node (client) on the remote machine:
+
+```bash
+sudo chmod 666 <your_leader_robot_serial_port>
+uvx pylekiwi client capture --camera base --output photo.jpg
+uvx pylekiwi client pose go <name_or_angles>     # preset pose name or "10,20,30,40,50"
+uvx pylekiwi client pose save <name>             # save current pose
+uvx pylekiwi client pose list                    # list preset poses
+uvx pylekiwi client pose delete <name>           # delete preset pose
+uvx pylekiwi client grasp                        # grasp object
+uvx pylekiwi client release                      # release object
 ```
