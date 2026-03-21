@@ -43,7 +43,6 @@ uvx --from 'pylekiwi[client]' pylekiwi leader --serial-port <your_leader_robot_s
 Or use the following command to start the leader node (client) on the remote machine:
 
 ```bash
-sudo chmod 666 <your_leader_robot_serial_port>
 uvx pylekiwi client capture --camera base --output photo.jpg
 uvx pylekiwi client pose go <name_or_angles>     # preset pose name or "10,20,30,40,50"
 uvx pylekiwi client pose save <name>             # save current pose
