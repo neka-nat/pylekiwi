@@ -4,9 +4,9 @@ import numpy as np
 from loguru import logger
 from rustypot import Sts3215PyController
 
-from kinpy import build_serial_chain_from_mjcf
+from kinpy import Transform, build_serial_chain_from_mjcf
 
-from pylekiwi.models import ArmJointCommand, ArmState
+from pylekiwi.models import ArmEEInchingCommand, ArmJointCommand, ArmState
 from pylekiwi.settings import Settings
 
 
@@ -37,11 +37,17 @@ class ArmController:
             )
         self.motor_controller = motor_controller
 
-        # self.chain = build_serial_chain_from_mjcf(
-        #     open(_MODEL_FILE, "rb").read(),
-        #     "gripper",
-        #     model_dir=os.path.dirname(_MODEL_FILE),
-        # )
+        self.chain = build_serial_chain_from_mjcf(
+            open(_MODEL_FILE, "rb").read(),
+            "gripper",
+            model_dir=os.path.dirname(_MODEL_FILE),
+        )
+
+    def forward_kinematics(self, joint_angles: tuple[float, float, float, float, float]) -> Transform:
+        return self.chain.forward_kinematics(joint_angles)
+
+    def inverse_kinematics(self, transform: Transform) -> tuple[float, float, float, float, float]:
+        return self.chain.inverse_kinematics(transform)
 
     def set_torque(self):
         for i in self.JOINT_IDS:
@@ -65,6 +71,32 @@ class ArmController:
             joint_angles=tuple(joint_angles), gripper_position=gripper_position
         )
 
+    def read_joint_positions(self) -> tuple[float, float, float, float, float]:
+        positions = self.motor_controller.sync_read_present_position(list(self.JOINT_IDS))
+        return tuple(float(v) for v in positions)
+
+    def read_raw_joint_positions(self) -> tuple[int, int, int, int, int]:
+        positions = self.motor_controller.sync_read_raw_present_position(
+            list(self.JOINT_IDS)
+        )
+        return tuple(int(v) for v in positions)
+
+    def read_joint_offsets(self) -> tuple[float, float, float, float, float]:
+        offsets = self.motor_controller.sync_read_offset(list(self.JOINT_IDS))
+        return tuple(float(v) for v in offsets)
+
+    def read_joint_offset(self, joint_id: int) -> float:
+        return float(self.motor_controller.read_offset(joint_id))
+
+    def write_joint_offset(self, joint_id: int, offset: float) -> None:
+        self.motor_controller.write_offset(joint_id, offset)
+
+    def read_joint_lock(self, joint_id: int) -> bool:
+        return bool(self.motor_controller.read_lock(joint_id))
+
+    def write_joint_lock(self, joint_id: int, locked: bool) -> None:
+        self.motor_controller.write_lock(joint_id, locked)
+
     def send_joint_action(self, action: ArmJointCommand):
         target_ids = list(self.JOINT_IDS)
         if action.gripper_position is not None:
@@ -73,3 +105,15 @@ class ArmController:
         if action.gripper_position is not None:
             command += [action.gripper_position]
         self.motor_controller.sync_write_goal_position(target_ids, command)
+
+    def send_ee_inching_action(self, action: ArmEEInchingCommand):
+        current_state = self.get_current_state()
+        current_ee = self.forward_kinematics(current_state.joint_angles)
+        target_ee = current_ee * Transform(pos=action.delta_xyz)
+        target_joints = self.inverse_kinematics(target_ee)
+        self.send_joint_action(
+            ArmJointCommand(
+                joint_angles=target_joints,
+                gripper_position=current_state.gripper_position,
+            ),
+        )

@@ -26,6 +26,8 @@ class Constants(BaseModel):
     COMMAND_KEY: str = "lekiwi/command"
     BASE_CAMERA_KEY: str = "lekiwi/camera/base"
     ARM_CAMERA_KEY: str = "lekiwi/camera/arm"
+    ARM_CALIBRATION_KEY: str = "lekiwi/maintenance/arm/calibration"
+    CALIBRATION_BACKUP_DIRNAME: str = "calibration-backups"
 
 
 constants = Constants()

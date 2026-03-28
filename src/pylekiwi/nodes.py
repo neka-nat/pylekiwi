@@ -1,4 +1,5 @@
 import time
+import threading
 
 import cv2
 import numpy as np
@@ -13,8 +14,9 @@ from rustypot import Sts3215PyController
 
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
+from pylekiwi.calibration import CalibrationError, backup_offsets, get_status, restore_offsets, zero_to_reference_pose
 from pylekiwi.camera_controller import CameraController, encode_jpeg
-from pylekiwi.models import ArmJointCommand, BaseCommand, LekiwiCommand
+from pylekiwi.models import ArmCalibrationRequest, ArmCalibrationResponse, ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
 
@@ -25,6 +27,7 @@ class HostControllerNode:
 
     def __init__(self, settings: Settings | None = None):
         settings = settings or Settings()
+        self._settings = settings
         motor_controller = Sts3215PyController(
             serial_port=settings.serial_port,
             baudrate=settings.baudrate,
@@ -37,48 +40,145 @@ class HostControllerNode:
             arm_camera_id=settings.arm_camera_id,
         )
         self._target_arm_command: ArmJointCommand | None = None
+        self._arm_smoother: AccelLimitedSmoother | None = None
         self._dt = constants.DT
+        self._maintenance_active = False
+        self._arm_lock = threading.RLock()
+
+    def _reset_arm_smoother_locked(self) -> None:
+        current_arm_state = self._arm_controller.get_current_state()
+        current_arm_command = ArmJointCommand(
+            joint_angles=current_arm_state.joint_angles,
+            gripper_position=current_arm_state.gripper_position,
+        )
+        self._arm_smoother = AccelLimitedSmoother(
+            q=current_arm_command,
+            v_max=constants.JOINT_V_MAX,
+            a_max=constants.JOINT_A_MAX,
+            dt=self._dt,
+        )
+        self._target_arm_command = current_arm_command
+
+    def _handle_arm_calibration_request(
+        self, request: ArmCalibrationRequest
+    ) -> ArmCalibrationResponse:
+        with self._arm_lock:
+            if request.action == "status":
+                return get_status(
+                    self._arm_controller, serial_port=self._settings.serial_port
+                )
+
+            if request.action == "backup":
+                return backup_offsets(
+                    self._arm_controller, serial_port=self._settings.serial_port
+                )
+
+            if request.action == "zero":
+                if request.reference_joint_angles_deg is None:
+                    raise CalibrationError(
+                        "reference_joint_angles_deg is required for zero."
+                    )
+                self._maintenance_active = True
+                try:
+                    response = zero_to_reference_pose(
+                        self._arm_controller,
+                        serial_port=self._settings.serial_port,
+                        reference_angles_deg=request.reference_joint_angles_deg,
+                    )
+                    self._reset_arm_smoother_locked()
+                    return response
+                finally:
+                    self._maintenance_active = False
+
+            if request.action == "restore":
+                if request.backup_path is None:
+                    raise CalibrationError("backup_path is required for restore.")
+                self._maintenance_active = True
+                try:
+                    response = restore_offsets(
+                        self._arm_controller,
+                        serial_port=self._settings.serial_port,
+                        backup_path=request.backup_path,
+                    )
+                    self._reset_arm_smoother_locked()
+                    return response
+                finally:
+                    self._maintenance_active = False
+
+            raise CalibrationError(f"Unsupported calibration action: {request.action}")
+
+    def _listener_arm_calibration_query(self, query: zenoh.Query) -> None:
+        with query:
+            try:
+                if query.payload is None:
+                    raise CalibrationError("Missing calibration request payload.")
+                request = ArmCalibrationRequest.model_validate_json(
+                    query.payload.to_string()
+                )
+                response = self._handle_arm_calibration_request(request)
+            except Exception as e:
+                logger.exception("Arm calibration request failed")
+                response = ArmCalibrationResponse(
+                    ok=False,
+                    message=str(e),
+                    serial_port=self._settings.serial_port,
+                )
+
+            query.reply(
+                constants.ARM_CALIBRATION_KEY,
+                response.model_dump_json(),
+                encoding=zenoh.Encoding.APPLICATION_JSON,
+            )
 
     def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
         command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
         logger.debug(f"Received command: {command}")
-        if command.base_command is not None:
-            self._base_controller.send_action(command.base_command)
-        if (
-            command.arm_command is not None
-            and command.arm_command.command_type == "joint"
-        ):
-            self._target_arm_command = command.arm_command
+        if self._maintenance_active:
+            logger.warning("Ignoring command while arm maintenance is active.")
+            return
+        with self._arm_lock:
+            if self._maintenance_active:
+                logger.warning("Ignoring command while arm maintenance is active.")
+                return
+            if command.base_command is not None:
+                self._base_controller.send_action(command.base_command)
+            if (
+                command.arm_command is not None
+                and command.arm_command.command_type in ("joint", "ee_inching")
+            ):
+                self._target_arm_command = command.arm_command
 
     def run(self):
         with zenoh.open(zenoh.Config()) as session:
             sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
+            calibration_queryable = session.declare_queryable(
+                constants.ARM_CALIBRATION_KEY, self._listener_arm_calibration_query
+            )
             pub_base_cam = session.declare_publisher(constants.BASE_CAMERA_KEY)
             pub_arm_cam = session.declare_publisher(constants.ARM_CAMERA_KEY)
             try:
-                current_arm_state = self._arm_controller.get_current_state()
-                current_arm_command = ArmJointCommand(
-                    joint_angles=current_arm_state.joint_angles,
-                    gripper_position=current_arm_state.gripper_position,
-                )
-                self._arm_smoother = AccelLimitedSmoother(
-                    q=current_arm_command,
-                    v_max=constants.JOINT_V_MAX,
-                    a_max=constants.JOINT_A_MAX,
-                    dt=self._dt,
-                )
-                self._target_arm_command = current_arm_command
+                with self._arm_lock:
+                    self._reset_arm_smoother_locked()
             except Exception as e:
                 logger.error(f"Error initializing arm smoother: {e}")
                 sub.undeclare()
+                calibration_queryable.undeclare()
                 return
             logger.info("Starting host controller node...")
             try:
                 while True:
                     start_time = time.time()
-                    if self._target_arm_command is not None:
-                        q, _ = self._arm_smoother.step(self._target_arm_command)
-                        self._arm_controller.send_joint_action(q)
+                    with self._arm_lock:
+                        if (
+                            not self._maintenance_active
+                            and self._target_arm_command is not None
+                            and self._arm_smoother is not None
+                        ):
+                            q, _ = self._arm_smoother.step(self._target_arm_command)
+                            if self._target_arm_command.command_type == "ee_inching":
+                                self._arm_controller.send_ee_inching_action(q)
+                            else:
+                                self._arm_controller.send_joint_action(q)
                     # Publish camera frames
                     base_frame = self._camera_controller.get_base_frame()
                     arm_frame = self._camera_controller.get_arm_frame()
@@ -91,6 +191,7 @@ class HostControllerNode:
                 pass
             finally:
                 sub.undeclare()
+                calibration_queryable.undeclare()
 
 
 class ClientControllerNode:
