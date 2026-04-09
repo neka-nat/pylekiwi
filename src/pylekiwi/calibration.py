@@ -10,6 +10,9 @@ from pylekiwi.settings import constants
 
 
 _VERIFY_TOLERANCE_RAD = math.radians(2.0)
+# ST3215 position resolution is 360° / 4096, so offset readback can differ by one
+# encoder tick even when the write succeeds.
+_OFFSET_READBACK_TOLERANCE_RAD = math.tau / 4096.0
 
 
 class CalibrationError(RuntimeError):
@@ -91,7 +94,11 @@ def _apply_joint_offsets(
                 arm.write_joint_lock(joint_id, True)
 
         readback = arm.read_joint_offset(joint_id)
-        if not math.isclose(readback, new_offset, abs_tol=1e-6):
+        if not math.isclose(
+            readback,
+            new_offset,
+            abs_tol=_OFFSET_READBACK_TOLERANCE_RAD,
+        ):
             raise CalibrationError(
                 f"Offset readback mismatch on joint {joint_id}: "
                 f"expected {new_offset:.6f}, got {readback:.6f}"
@@ -215,7 +222,11 @@ def restore_offsets(
     restored_offsets_rad = _apply_joint_offsets(arm, target_offsets_rad)
     present_positions_rad = arm.read_joint_positions()
     verified = all(
-        math.isclose(actual, expected, abs_tol=1e-6)
+        math.isclose(
+            actual,
+            expected,
+            abs_tol=_OFFSET_READBACK_TOLERANCE_RAD,
+        )
         for actual, expected in zip(restored_offsets_rad, target_offsets_rad)
     )
 

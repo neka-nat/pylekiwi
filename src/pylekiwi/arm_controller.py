@@ -22,6 +22,14 @@ class ArmController:
     JOINT_IDS = (1, 2, 3, 4, 5)
     GRIPPER_ID = 6
 
+    @staticmethod
+    def _unwrap_single_value(value):
+        if isinstance(value, (list, tuple)):
+            if len(value) != 1:
+                raise ValueError(f"Expected a single value, got {value!r}")
+            return value[0]
+        return value
+
     def __init__(self, motor_controller: Sts3215PyController | Settings | None = None):
         if motor_controller is None:
             settings = (
@@ -101,13 +109,13 @@ class ArmController:
         return tuple(float(v) for v in offsets)
 
     def read_joint_offset(self, joint_id: int) -> float:
-        return float(self.motor_controller.read_offset(joint_id))
+        return float(self._unwrap_single_value(self.motor_controller.read_offset(joint_id)))
 
     def write_joint_offset(self, joint_id: int, offset: float) -> None:
         self.motor_controller.write_offset(joint_id, offset)
 
     def read_joint_lock(self, joint_id: int) -> bool:
-        return bool(self.motor_controller.read_lock(joint_id))
+        return bool(self._unwrap_single_value(self.motor_controller.read_lock(joint_id)))
 
     def write_joint_lock(self, joint_id: int, locked: bool) -> None:
         self.motor_controller.write_lock(joint_id, locked)
@@ -117,7 +125,11 @@ class ArmController:
         return tuple(bool(v) for v in enabled)
 
     def read_gripper_torque_enabled(self) -> bool:
-        return bool(self.motor_controller.read_torque_enable(self.GRIPPER_ID))
+        return bool(
+            self._unwrap_single_value(
+                self.motor_controller.read_torque_enable(self.GRIPPER_ID)
+            )
+        )
 
     def is_arm_torque_enabled(self) -> bool:
         return all(self.read_joint_torque_enabled()) and self.read_gripper_torque_enabled()
