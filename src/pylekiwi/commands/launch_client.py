@@ -403,8 +403,8 @@ def inching(
         node.close()
 
 
-GRIPPER_CLOSED = math.radians(60.0)  # ~1.047 rad
-GRIPPER_OPEN = 0.0
+GRIPPER_CLOSED = 0.0
+GRIPPER_OPEN = math.radians(60.0)  # ~1.047 rad
 
 
 @app.command()
