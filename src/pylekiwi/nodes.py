@@ -19,6 +19,7 @@ from pylekiwi.camera_controller import CameraController, encode_jpeg
 from pylekiwi.models import ArmCalibrationRequest, ArmCalibrationResponse, ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
+from pylekiwi.zenoh_config import create_zenoh_config
 
 
 class HostControllerNode:
@@ -163,7 +164,7 @@ class HostControllerNode:
                     )
 
     def run(self):
-        with zenoh.open(zenoh.Config()) as session:
+        with zenoh.open(create_zenoh_config(self._settings)) as session:
             sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
             calibration_queryable = session.declare_queryable(
                 constants.ARM_CALIBRATION_KEY, self._listener_arm_calibration_query
@@ -209,11 +210,35 @@ class ClientControllerNode:
     """Controller node that publishes commands to the host node.
     """
 
-    def __init__(self):
-        self.session = zenoh.open(zenoh.Config())
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        wait_for_matching: bool = False,
+    ):
+        self.settings = settings or Settings()
+        self.session = zenoh.open(create_zenoh_config(self.settings))
         self.publisher = self.session.declare_publisher(constants.COMMAND_KEY)
+        self._wait_for_matching = wait_for_matching
+        self._matching_checked = not wait_for_matching
+
+    def _ensure_matching(self) -> None:
+        if self._matching_checked or self.settings.zenoh_match_timeout <= 0:
+            self._matching_checked = True
+            return
+        deadline = time.time() + self.settings.zenoh_match_timeout
+        while time.time() < deadline:
+            if self.publisher.matching_status.matching:
+                self._matching_checked = True
+                return
+            time.sleep(0.05)
+        raise RuntimeError(
+            f"Timed out waiting for a host subscriber on '{constants.COMMAND_KEY}'."
+        )
 
     def send_command(self, command: LekiwiCommand):
+        if self._wait_for_matching:
+            self._ensure_matching()
         self.publisher.put(command.model_dump_json())
 
     def send_base_command(self, command: BaseCommand):
@@ -222,13 +247,31 @@ class ClientControllerNode:
     def send_arm_joint_command(self, command: ArmJointCommand):
         self.send_command(LekiwiCommand(arm_command=command))
 
+    def close(self) -> None:
+        publisher = getattr(self, "publisher", None)
+        if publisher is not None:
+            try:
+                publisher.undeclare()
+            except Exception:
+                pass
+        session = getattr(self, "session", None)
+        if session is not None:
+            try:
+                if not session.is_closed():
+                    session.close()
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.close()
+
 
 class ClientControllerWithCameraNode(ClientControllerNode):
     """Controller node that publishes commands to the host node and receives camera frames.
     """
 
     def __init__(self, settings: Settings):
-        super().__init__()
+        super().__init__(settings=settings)
         self.settings = settings
         self.sub_base_cam = self.session.declare_subscriber(constants.BASE_CAMERA_KEY, self._listener_base_cam)
         self.sub_arm_cam = self.session.declare_subscriber(constants.ARM_CAMERA_KEY, self._listener_arm_cam)
@@ -262,6 +305,21 @@ class ClientControllerWithCameraNode(ClientControllerNode):
         ):
             rr.log("base_camera", rr.Image(self.base_frame_queue[-1][..., ::-1]))
             rr.log("arm_camera", rr.Image(self.arm_frame_queue[-1][..., ::-1]))
+
+    def close(self) -> None:
+        sub_base_cam = getattr(self, "sub_base_cam", None)
+        if sub_base_cam is not None:
+            try:
+                sub_base_cam.undeclare()
+            except Exception:
+                pass
+        sub_arm_cam = getattr(self, "sub_arm_cam", None)
+        if sub_arm_cam is not None:
+            try:
+                sub_arm_cam.undeclare()
+            except Exception:
+                pass
+        super().close()
 
 
 class LeaderControllerNode(ClientControllerWithCameraNode):

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from pylekiwi.models import ArmJointCommand
 
@@ -11,6 +11,11 @@ class Settings(BaseModel):
     arm_camera_id: int | None = 2
     view_camera: bool = True
     rerun_spawn: bool = True
+    zenoh_mode: str | None = None
+    zenoh_connect_endpoints: list[str] = Field(default_factory=list)
+    zenoh_listen_endpoints: list[str] = Field(default_factory=list)
+    zenoh_enable_multicast: bool | None = None
+    zenoh_match_timeout: float = 3.0
 
 
 class Constants(BaseModel):

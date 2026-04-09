@@ -15,7 +15,12 @@ from pylekiwi.models import (
     LekiwiCommand,
 )
 from pylekiwi.preset import delete_preset, list_presets, load_presets, save_preset
-from pylekiwi.settings import constants
+from pylekiwi.settings import Settings, constants
+from pylekiwi.zenoh_config import (
+    create_zenoh_config,
+    describe_zenoh_settings,
+    tcp_endpoint,
+)
 
 app = typer.Typer(
     help="Client utilities (capture, pose, position, inching, grasp, release)",
@@ -30,12 +35,57 @@ app.add_typer(pose_app, name="pose")
 app.add_typer(calibrate_app, name="calibrate")
 
 
+@app.callback()
+def client(
+    ctx: typer.Context,
+    host: Annotated[
+        str | None,
+        typer.Option(help="Robot host/IP for an explicit Zenoh TCP connection."),
+    ] = None,
+    port: Annotated[
+        int,
+        typer.Option(help="Zenoh TCP port on the robot."),
+    ] = 7447,
+    no_multicast: Annotated[
+        bool,
+        typer.Option(
+            "--no-multicast",
+            is_flag=True,
+            help="Disable Zenoh multicast scouting.",
+        ),
+    ] = False,
+) -> None:
+    settings_kwargs: dict[str, object] = {}
+    if host is not None:
+        settings_kwargs.update(
+            {
+                "zenoh_mode": "client",
+                "zenoh_connect_endpoints": [tcp_endpoint(host, port)],
+                "zenoh_enable_multicast": False,
+            }
+        )
+    elif no_multicast:
+        settings_kwargs["zenoh_enable_multicast"] = False
+    ctx.obj = Settings(**settings_kwargs)
+    logger.info(f"Zenoh settings: {describe_zenoh_settings(ctx.obj)}")
+
+
+def _get_client_settings(ctx: typer.Context, **updates: object) -> Settings:
+    current: typer.Context | None = ctx
+    while current is not None:
+        if isinstance(current.obj, Settings):
+            return current.obj.model_copy(update=updates)
+        current = current.parent
+    return Settings(**updates)
+
+
 def _request_calibration(
     request: ArmCalibrationRequest,
     *,
     timeout: float,
+    settings: Settings,
 ) -> ArmCalibrationResponse:
-    with zenoh.open(zenoh.Config()) as session:
+    with zenoh.open(create_zenoh_config(settings)) as session:
         replies = session.get(
             constants.ARM_CALIBRATION_KEY,
             timeout=timeout,
@@ -111,6 +161,7 @@ def _ensure_confirmed(
 
 @app.command()
 def capture(
+    ctx: typer.Context,
     camera: Annotated[str, typer.Option(help="Camera to capture: base or arm")] = "base",
     output: Annotated[str, typer.Option(help="Output file path")] = "capture.jpg",
 ):
@@ -118,28 +169,32 @@ def capture(
     import cv2
 
     from pylekiwi.nodes import ClientControllerWithCameraNode
-    from pylekiwi.settings import Settings
 
-    node = ClientControllerWithCameraNode(settings=Settings(view_camera=False))
+    node = ClientControllerWithCameraNode(
+        settings=_get_client_settings(ctx, view_camera=False)
+    )
     logger.info(f"Waiting for {camera} camera frame...")
 
-    deadline = time.time() + 10.0
-    frame = None
-    while time.time() < deadline:
-        if camera == "base":
-            frame = node.get_base_frame()
-        else:
-            frame = node.get_arm_frame()
-        if frame is not None:
-            break
-        time.sleep(0.05)
+    try:
+        deadline = time.time() + 10.0
+        frame = None
+        while time.time() < deadline:
+            if camera == "base":
+                frame = node.get_base_frame()
+            else:
+                frame = node.get_arm_frame()
+            if frame is not None:
+                break
+            time.sleep(0.05)
 
-    if frame is None:
-        logger.error("Timed out waiting for camera frame")
-        raise typer.Exit(code=1)
+        if frame is None:
+            logger.error("Timed out waiting for camera frame")
+            raise typer.Exit(code=1)
 
-    cv2.imwrite(output, frame)
-    logger.info(f"Saved {camera} camera frame to {output}")
+        cv2.imwrite(output, frame)
+        logger.info(f"Saved {camera} camera frame to {output}")
+    finally:
+        node.close()
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +203,7 @@ def capture(
 
 @pose_app.command("go")
 def pose_go(
+    ctx: typer.Context,
     target: Annotated[str, typer.Argument(help="Preset name or comma-separated angles in degrees (e.g. '10,20,30,40,50')")],
 ):
     """Move the arm to a preset pose or specified joint angles."""
@@ -170,9 +226,18 @@ def pose_go(
             logger.error(f"Unknown preset '{target}' and could not parse as angles")
             raise typer.Exit(code=1)
 
-    node = ClientControllerNode()
-    node.send_arm_joint_command(cmd)
-    logger.info(f"Sent arm command: {cmd}")
+    node = ClientControllerNode(
+        settings=_get_client_settings(ctx),
+        wait_for_matching=True,
+    )
+    try:
+        node.send_arm_joint_command(cmd)
+        logger.info(f"Sent arm command: {cmd}")
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    finally:
+        node.close()
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +306,7 @@ def pose_delete(
 
 @app.command()
 def position(
+    ctx: typer.Context,
     x_mm: Annotated[
         float,
         typer.Option("--x-mm", help="Absolute X position in mm in the base frame."),
@@ -264,19 +330,29 @@ def position(
     """Move the end effector to an absolute position in the base frame."""
     from pylekiwi.nodes import ClientControllerNode
 
-    node = ClientControllerNode()
+    node = ClientControllerNode(
+        settings=_get_client_settings(ctx),
+        wait_for_matching=True,
+    )
     cmd = ArmEEPositionCommand(
         xyz=(x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0),
         gripper_position=(
             math.radians(gripper_deg) if gripper_deg is not None else None
         ),
     )
-    node.send_command(LekiwiCommand(arm_command=cmd))
-    logger.info(f"Sent base-frame position command: {cmd}")
+    try:
+        node.send_command(LekiwiCommand(arm_command=cmd))
+        logger.info(f"Sent base-frame position command: {cmd}")
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    finally:
+        node.close()
 
 
 @app.command()
 def inching(
+    ctx: typer.Context,
     x_mm: Annotated[
         float,
         typer.Option("--x-mm", help="X-axis increment in mm in the base frame."),
@@ -309,13 +385,22 @@ def inching(
         logger.error("Specify a non-zero delta or --gripper-deg")
         raise typer.Exit(code=1)
 
-    node = ClientControllerNode()
+    node = ClientControllerNode(
+        settings=_get_client_settings(ctx),
+        wait_for_matching=True,
+    )
     cmd = ArmEEInchingCommand(
         delta_xyz=delta_xyz,
         gripper_position=gripper_position,
     )
-    node.send_command(LekiwiCommand(arm_command=cmd))
-    logger.info(f"Sent base-frame inching command: {cmd}")
+    try:
+        node.send_command(LekiwiCommand(arm_command=cmd))
+        logger.info(f"Sent base-frame inching command: {cmd}")
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    finally:
+        node.close()
 
 
 GRIPPER_CLOSED = math.radians(60.0)  # ~1.047 rad
@@ -323,35 +408,53 @@ GRIPPER_OPEN = 0.0
 
 
 @app.command()
-def grasp():
+def grasp(ctx: typer.Context):
     """Close the gripper."""
     from pylekiwi.nodes import ClientControllerNode
 
-    node = ClientControllerNode()
+    node = ClientControllerNode(
+        settings=_get_client_settings(ctx),
+        wait_for_matching=True,
+    )
     cmd = LekiwiCommand(
         arm_command=ArmJointCommand(
             joint_angles=(0.0, 0.0, 0.0, 0.0, 0.0),
             gripper_position=GRIPPER_CLOSED,
         ),
     )
-    node.send_command(cmd)
-    logger.info("Sent grasp command")
+    try:
+        node.send_command(cmd)
+        logger.info("Sent grasp command")
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    finally:
+        node.close()
 
 
 @app.command()
-def release():
+def release(ctx: typer.Context):
     """Open the gripper."""
     from pylekiwi.nodes import ClientControllerNode
 
-    node = ClientControllerNode()
+    node = ClientControllerNode(
+        settings=_get_client_settings(ctx),
+        wait_for_matching=True,
+    )
     cmd = LekiwiCommand(
         arm_command=ArmJointCommand(
             joint_angles=(0.0, 0.0, 0.0, 0.0, 0.0),
             gripper_position=GRIPPER_OPEN,
         ),
     )
-    node.send_command(cmd)
-    logger.info("Sent release command")
+    try:
+        node.send_command(cmd)
+        logger.info("Sent release command")
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    finally:
+        node.close()
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +463,13 @@ def release():
 
 
 @calibrate_app.command("status")
-def calibrate_status():
+def calibrate_status(ctx: typer.Context):
     """Read the remote arm calibration status."""
     try:
         response = _request_calibration(
             ArmCalibrationRequest(action="status"),
             timeout=5.0,
+            settings=_get_client_settings(ctx),
         )
     except RuntimeError as e:
         logger.error(str(e))
@@ -376,12 +480,13 @@ def calibrate_status():
 
 
 @calibrate_app.command("backup")
-def calibrate_backup():
+def calibrate_backup(ctx: typer.Context):
     """Back up the current remote arm offsets."""
     try:
         response = _request_calibration(
             ArmCalibrationRequest(action="backup"),
             timeout=10.0,
+            settings=_get_client_settings(ctx),
         )
     except RuntimeError as e:
         logger.error(str(e))
@@ -393,6 +498,7 @@ def calibrate_backup():
 
 @calibrate_app.command("zero")
 def calibrate_zero(
+    ctx: typer.Context,
     reference_deg: Annotated[
         str,
         typer.Option(
@@ -428,6 +534,7 @@ def calibrate_zero(
                 reference_joint_angles_deg=reference_pose,
             ),
             timeout=30.0,
+            settings=_get_client_settings(ctx),
         )
     except RuntimeError as e:
         logger.error(str(e))
@@ -439,6 +546,7 @@ def calibrate_zero(
 
 @calibrate_app.command("restore")
 def calibrate_restore(
+    ctx: typer.Context,
     backup_path: Annotated[
         str,
         typer.Argument(
@@ -468,6 +576,7 @@ def calibrate_restore(
                 backup_path=backup_path,
             ),
             timeout=30.0,
+            settings=_get_client_settings(ctx),
         )
     except RuntimeError as e:
         logger.error(str(e))

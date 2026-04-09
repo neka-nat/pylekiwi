@@ -53,3 +53,16 @@ uvx pylekiwi client inching --x-mm 10 --z-mm -5  # move EE delta in base frame
 uvx pylekiwi client grasp                        # grasp object
 uvx pylekiwi client release                      # release object
 ```
+
+If automatic discovery does not work across machines, you can connect explicitly to the robot:
+
+```bash
+# On the robot (Raspberry Pi)
+uvx pylekiwi host --serial-port <your_follower_robot_serial_port> --listen-host 0.0.0.0 --listen-port 7447
+
+# On the remote machine
+uvx --from 'pylekiwi[client]' pylekiwi leader --serial-port <your_leader_robot_serial_port> --host <your robot ip> --port 7447
+uvx pylekiwi client --host <your robot ip> --port 7447 capture --camera base --output photo.jpg
+uvx pylekiwi client --host <your robot ip> --port 7447 pose go <name_or_angles>
+uvx pylekiwi client --host <your robot ip> --port 7447 position --x-mm 180 --y-mm 0 --z-mm 120
+```
