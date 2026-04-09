@@ -42,6 +42,25 @@ def _angles_deg_to_rad(
     return tuple(math.radians(v) for v in values)
 
 
+def _compute_target_offsets(
+    *,
+    before_offsets_rad: tuple[float, float, float, float, float],
+    present_positions_rad: tuple[float, float, float, float, float],
+    reference_angles_rad: tuple[float, float, float, float, float],
+) -> tuple[float, float, float, float, float]:
+    # ST3215 present/goal position APIs behave as:
+    #   present_position = raw_position - offset
+    # Therefore, with raw_position = present_position + old_offset, solving
+    # reference_angle = raw_position - new_offset yields:
+    #   new_offset = old_offset + present_position - reference_angle
+    return tuple(
+        old_offset + present_position - reference_angle
+        for old_offset, present_position, reference_angle in zip(
+            before_offsets_rad, present_positions_rad, reference_angles_rad
+        )
+    )
+
+
 def _joint_states(arm: ArmController) -> list[ArmCalibrationJointState]:
     raw_positions = arm.read_raw_joint_positions()
     present_angles = arm.read_joint_positions()
@@ -178,11 +197,10 @@ def zero_to_reference_pose(
     backup_path, before_offsets_rad = _write_backup(arm, serial_port=serial_port)
     present_positions_rad = arm.read_joint_positions()
     reference_angles_rad = _angles_deg_to_rad(reference_angles_deg)
-    target_offsets_rad = tuple(
-        old_offset + (reference_angle - present_position)
-        for old_offset, reference_angle, present_position in zip(
-            before_offsets_rad, reference_angles_rad, present_positions_rad
-        )
+    target_offsets_rad = _compute_target_offsets(
+        before_offsets_rad=before_offsets_rad,
+        present_positions_rad=present_positions_rad,
+        reference_angles_rad=reference_angles_rad,
     )
     after_offsets_rad = _apply_joint_offsets(arm, target_offsets_rad)
     present_after_rad = arm.read_joint_positions()
