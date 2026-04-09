@@ -12,6 +12,10 @@ DEFAULT_PRESETS: dict[str, dict] = {
         "joint_angles": [0.0, 0.0, 0.0, 0.0, 0.0],
         "gripper_position": 0.0,
     },
+    "ready": {
+        "joint_angles": [0.0, -70.0, 40.0, 30.0, 0.0],
+        "gripper_position": 0.0,
+    },
 }
 
 
