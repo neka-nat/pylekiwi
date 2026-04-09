@@ -24,7 +24,14 @@ from pylekiwi.calibration import (
     zero_to_reference_pose,
 )
 from pylekiwi.camera_controller import CameraController, encode_jpeg
-from pylekiwi.models import ArmCalibrationRequest, ArmCalibrationResponse, ArmJointCommand, BaseCommand, LekiwiCommand
+from pylekiwi.models import (
+    ArmCalibrationRequest,
+    ArmCalibrationResponse,
+    ArmJointCommand,
+    BaseCommand,
+    LekiwiCommand,
+    RobotStateResponse,
+)
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
 from pylekiwi.zenoh_config import create_zenoh_config
@@ -61,6 +68,16 @@ class HostControllerNode:
         response.message = message
         response.maintenance_active = self._maintenance_active
         return response
+
+    def _build_robot_state_response_locked(self, message: str) -> RobotStateResponse:
+        return RobotStateResponse(
+            ok=True,
+            message=message,
+            serial_port=self._settings.serial_port,
+            maintenance_active=self._maintenance_active,
+            arm_state=self._arm_controller.get_current_state(),
+            base_state=self._base_controller.get_current_state(),
+        )
 
     def _enter_arm_maintenance_locked(self) -> ArmCalibrationResponse:
         self._maintenance_active = True
@@ -174,6 +191,28 @@ class HostControllerNode:
                 encoding=zenoh.Encoding.APPLICATION_JSON,
             )
 
+    def _listener_robot_state_query(self, query: zenoh.Query) -> None:
+        with query:
+            try:
+                with self._arm_lock:
+                    response = self._build_robot_state_response_locked(
+                        "Read current robot state."
+                    )
+            except Exception as e:
+                logger.exception("Robot state request failed")
+                response = RobotStateResponse(
+                    ok=False,
+                    message=str(e),
+                    serial_port=self._settings.serial_port,
+                    maintenance_active=self._maintenance_active,
+                )
+
+            query.reply(
+                constants.ROBOT_STATE_KEY,
+                response.model_dump_json(),
+                encoding=zenoh.Encoding.APPLICATION_JSON,
+            )
+
     def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
         command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
         logger.debug(f"Received command: {command}")
@@ -206,6 +245,9 @@ class HostControllerNode:
     def run(self):
         with zenoh.open(create_zenoh_config(self._settings)) as session:
             sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
+            state_queryable = session.declare_queryable(
+                constants.ROBOT_STATE_KEY, self._listener_robot_state_query
+            )
             calibration_queryable = session.declare_queryable(
                 constants.ARM_CALIBRATION_KEY, self._listener_arm_calibration_query
             )
@@ -217,6 +259,7 @@ class HostControllerNode:
             except Exception as e:
                 logger.error(f"Error initializing arm smoother: {e}")
                 sub.undeclare()
+                state_queryable.undeclare()
                 calibration_queryable.undeclare()
                 return
             logger.info("Starting host controller node...")
@@ -243,6 +286,7 @@ class HostControllerNode:
                 pass
             finally:
                 sub.undeclare()
+                state_queryable.undeclare()
                 calibration_queryable.undeclare()
 
 

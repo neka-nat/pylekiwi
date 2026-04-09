@@ -91,7 +91,9 @@ class ArmController:
             f"Joint angles: {joint_angles}, Gripper position: {gripper_position}"
         )
         return ArmState(
-            joint_angles=tuple(joint_angles), gripper_position=gripper_position
+            joint_angles=tuple(joint_angles),
+            gripper_position=gripper_position,
+            torque_enabled=self.is_arm_torque_enabled(),
         )
 
     def read_joint_positions(self) -> tuple[float, float, float, float, float]:

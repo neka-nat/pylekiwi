@@ -7,6 +7,7 @@ class BaseState(BaseModel):
     x_vel: float
     y_vel: float
     theta_deg_vel: float
+    torque_enabled: bool | None = None
 
 
 class BaseCommand(BaseModel):
@@ -18,6 +19,7 @@ class BaseCommand(BaseModel):
 class ArmState(BaseModel):
     joint_angles: tuple[float, float, float, float, float]
     gripper_position: float | None = None
+    torque_enabled: bool | None = None
 
 
 class ArmCalibrationJointState(BaseModel):
@@ -177,6 +179,19 @@ class ArmCalibrationResponse(BaseModel):
     maintenance_active: bool | None = None
     torque_enabled: bool | None = None
     verified: bool | None = None
+
+
+class RobotStateRequest(BaseModel):
+    pass
+
+
+class RobotStateResponse(BaseModel):
+    ok: bool
+    message: str
+    serial_port: str | None = None
+    maintenance_active: bool | None = None
+    arm_state: ArmState | None = None
+    base_state: BaseState | None = None
 
 
 class LekiwiCommand(BaseModel):

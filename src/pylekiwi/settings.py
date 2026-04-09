@@ -29,6 +29,7 @@ class Constants(BaseModel):
         gripper_position=600.0,
     )
     COMMAND_KEY: str = "lekiwi/command"
+    ROBOT_STATE_KEY: str = "lekiwi/state"
     BASE_CAMERA_KEY: str = "lekiwi/camera/base"
     ARM_CAMERA_KEY: str = "lekiwi/camera/arm"
     ARM_CALIBRATION_KEY: str = "lekiwi/maintenance/arm/calibration"

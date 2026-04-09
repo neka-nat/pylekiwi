@@ -11,6 +11,14 @@ class BaseController:
     BACK_WHEEL_ID = 8
     RIGHT_WHEEL_ID = 9
 
+    @staticmethod
+    def _unwrap_single_value(value):
+        if isinstance(value, (list, tuple)):
+            if len(value) != 1:
+                raise ValueError(f"Expected a single value, got {value!r}")
+            return value[0]
+        return value
+
     # 角度φの定義（+x 前方を 0°、反時計回り）
     _PHI_DEG = np.array([60.0, 180.0, 300.0])  # [LEFT, BACK, RIGHT]
 
@@ -41,6 +49,15 @@ class BaseController:
     def disable_torque(self):
         for i in (self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID):
             self.motor_controller.write_torque_enable(i, False)
+
+    def read_wheel_torque_enabled(self) -> tuple[bool, bool, bool]:
+        enabled = self.motor_controller.sync_read_torque_enable(
+            [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID]
+        )
+        return tuple(bool(v) for v in enabled)
+
+    def is_base_torque_enabled(self) -> bool:
+        return all(self.read_wheel_torque_enabled())
 
     @staticmethod
     def _saturate_radps(w_radps: np.ndarray, max_radps: float = 10.0) -> np.ndarray:
@@ -96,7 +113,8 @@ class BaseController:
         wheel_radps = self.motor_controller.sync_read_present_speed(
             [self.LEFT_WHEEL_ID, self.BACK_WHEEL_ID, self.RIGHT_WHEEL_ID]
         )
-        state = self._wheel_radps_to_body(wheel_radps)
+        state = self._wheel_radps_to_body(*(float(v) for v in wheel_radps))
+        state.torque_enabled = self.is_base_torque_enabled()
         logger.debug(f"Base state: {state}")
         return state
 

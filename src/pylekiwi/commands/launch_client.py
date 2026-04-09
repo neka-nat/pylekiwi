@@ -13,6 +13,7 @@ from pylekiwi.models import (
     ArmEEPositionCommand,
     ArmJointCommand,
     LekiwiCommand,
+    RobotStateResponse,
 )
 from pylekiwi.preset import delete_preset, list_presets, load_presets, save_preset
 from pylekiwi.settings import Settings, constants
@@ -23,7 +24,7 @@ from pylekiwi.zenoh_config import (
 )
 
 app = typer.Typer(
-    help="Client utilities (capture, pose, position, inching, grasp, release)",
+    help="Client utilities (state, capture, pose, position, inching, grasp, release)",
     no_args_is_help=True,
 )
 arm_app = typer.Typer(help="Remote arm maintenance commands", no_args_is_help=True)
@@ -108,6 +109,31 @@ def _request_calibration(
     raise RuntimeError("No calibration reply received from host.")
 
 
+def _request_robot_state(
+    *,
+    timeout: float,
+    settings: Settings,
+) -> RobotStateResponse:
+    with zenoh.open(create_zenoh_config(settings)) as session:
+        replies = session.get(
+            constants.ROBOT_STATE_KEY,
+            timeout=timeout,
+            encoding=zenoh.Encoding.APPLICATION_JSON,
+        )
+        errors: list[str] = []
+        for reply in replies:
+            if reply.ok is not None:
+                return RobotStateResponse.model_validate_json(
+                    reply.ok.payload.to_string()
+                )
+            if reply.err is not None:
+                errors.append(reply.err.payload.to_string())
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError("No state reply received from host.")
+
+
 def _parse_reference_pose(target: str) -> tuple[float, float, float, float, float]:
     parts = [float(x.strip()) for x in target.split(",")]
     if len(parts) != 5:
@@ -161,6 +187,31 @@ def _ensure_confirmed(
         raise typer.Exit(code=1)
 
 
+def _print_robot_state(response: RobotStateResponse) -> None:
+    if response.serial_port is not None:
+        typer.echo(f"serial_port: {response.serial_port}")
+    if response.maintenance_active is not None:
+        typer.echo(f"maintenance_active: {response.maintenance_active}")
+    typer.echo(response.message)
+    if response.base_state is not None:
+        typer.echo("base_state:")
+        typer.echo(f"  x_vel: {response.base_state.x_vel:.4f}")
+        typer.echo(f"  y_vel: {response.base_state.y_vel:.4f}")
+        typer.echo(f"  theta_deg_vel: {response.base_state.theta_deg_vel:.2f}")
+        typer.echo(f"  torque_enabled: {response.base_state.torque_enabled}")
+    if response.arm_state is not None:
+        angles_deg = [round(math.degrees(v), 2) for v in response.arm_state.joint_angles]
+        gripper_deg = (
+            round(math.degrees(response.arm_state.gripper_position), 2)
+            if response.arm_state.gripper_position is not None
+            else None
+        )
+        typer.echo("arm_state:")
+        typer.echo(f"  joint_angles_deg: {angles_deg}")
+        typer.echo(f"  gripper_deg: {gripper_deg}")
+        typer.echo(f"  torque_enabled: {response.arm_state.torque_enabled}")
+
+
 # ---------------------------------------------------------------------------
 # arm maintenance
 # ---------------------------------------------------------------------------
@@ -196,6 +247,37 @@ def arm_off(ctx: typer.Context):
         logger.error(str(e))
         raise typer.Exit(code=1)
     _print_calibration_response(response)
+    if not response.ok:
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# state
+# ---------------------------------------------------------------------------
+
+
+@app.command("state")
+def robot_state(
+    ctx: typer.Context,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw state response as JSON."),
+    ] = False,
+):
+    """Read the current remote robot state."""
+    try:
+        response = _request_robot_state(
+            timeout=5.0,
+            settings=_get_client_settings(ctx),
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(response.model_dump_json(indent=2))
+    else:
+        _print_robot_state(response)
     if not response.ok:
         raise typer.Exit(code=1)
 
