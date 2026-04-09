@@ -100,6 +100,40 @@ def _apply_joint_offsets(
     return arm.read_joint_offsets()
 
 
+def torque_off_for_manual_pose(
+    arm: ArmController,
+    *,
+    serial_port: str,
+) -> ArmCalibrationResponse:
+    arm.disable_torque()
+    return ArmCalibrationResponse(
+        ok=True,
+        message="Disabled arm torque. You can now move the arm by hand.",
+        serial_port=serial_port,
+        joint_states=_joint_states(arm),
+        present_joint_angles_deg=_angles_rad_to_deg(arm.read_joint_positions()),
+        torque_enabled=arm.is_arm_torque_enabled(),
+        maintenance_active=True,
+    )
+
+
+def torque_on_after_manual_pose(
+    arm: ArmController,
+    *,
+    serial_port: str,
+) -> ArmCalibrationResponse:
+    arm.set_torque()
+    return ArmCalibrationResponse(
+        ok=True,
+        message="Enabled arm torque.",
+        serial_port=serial_port,
+        joint_states=_joint_states(arm),
+        present_joint_angles_deg=_angles_rad_to_deg(arm.read_joint_positions()),
+        torque_enabled=arm.is_arm_torque_enabled(),
+        maintenance_active=False,
+    )
+
+
 def get_status(arm: ArmController, *, serial_port: str) -> ArmCalibrationResponse:
     positions_rad = arm.read_joint_positions()
     offsets_rad = arm.read_joint_offsets()
@@ -110,6 +144,7 @@ def get_status(arm: ArmController, *, serial_port: str) -> ArmCalibrationRespons
         joint_states=_joint_states(arm),
         before_offsets_deg=_angles_rad_to_deg(offsets_rad),
         present_joint_angles_deg=_angles_rad_to_deg(positions_rad),
+        torque_enabled=arm.is_arm_torque_enabled(),
     )
 
 
@@ -123,6 +158,7 @@ def backup_offsets(arm: ArmController, *, serial_port: str) -> ArmCalibrationRes
         backup_path=str(backup_path),
         before_offsets_deg=_angles_rad_to_deg(offsets_rad),
         present_joint_angles_deg=_angles_rad_to_deg(arm.read_joint_positions()),
+        torque_enabled=arm.is_arm_torque_enabled(),
     )
 
 
@@ -132,7 +168,6 @@ def zero_to_reference_pose(
     serial_port: str,
     reference_angles_deg: tuple[float, float, float, float, float],
 ) -> ArmCalibrationResponse:
-    arm.disable_torque()
     backup_path, before_offsets_rad = _write_backup(arm, serial_port=serial_port)
     present_positions_rad = arm.read_joint_positions()
     reference_angles_rad = _angles_deg_to_rad(reference_angles_deg)
@@ -163,6 +198,7 @@ def zero_to_reference_pose(
         after_offsets_deg=_angles_rad_to_deg(after_offsets_rad),
         present_joint_angles_deg=_angles_rad_to_deg(present_after_rad),
         reference_joint_angles_deg=reference_angles_deg,
+        torque_enabled=arm.is_arm_torque_enabled(),
         verified=verified,
     )
 
@@ -175,7 +211,6 @@ def restore_offsets(
 ) -> ArmCalibrationResponse:
     backup = ArmCalibrationBackup.model_validate_json(Path(backup_path).read_text())
     target_offsets_rad = _angles_deg_to_rad(backup.offsets_deg)
-    arm.disable_torque()
     before_offsets_rad = arm.read_joint_offsets()
     restored_offsets_rad = _apply_joint_offsets(arm, target_offsets_rad)
     present_positions_rad = arm.read_joint_positions()
@@ -197,5 +232,6 @@ def restore_offsets(
         before_offsets_deg=_angles_rad_to_deg(before_offsets_rad),
         after_offsets_deg=_angles_rad_to_deg(restored_offsets_rad),
         present_joint_angles_deg=_angles_rad_to_deg(present_positions_rad),
+        torque_enabled=arm.is_arm_torque_enabled(),
         verified=verified,
     )

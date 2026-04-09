@@ -14,7 +14,15 @@ from rustypot import Sts3215PyController
 
 from pylekiwi.arm_controller import ArmController
 from pylekiwi.base_controller import BaseController
-from pylekiwi.calibration import CalibrationError, backup_offsets, get_status, restore_offsets, zero_to_reference_pose
+from pylekiwi.calibration import (
+    CalibrationError,
+    backup_offsets,
+    get_status,
+    restore_offsets,
+    torque_off_for_manual_pose,
+    torque_on_after_manual_pose,
+    zero_to_reference_pose,
+)
 from pylekiwi.camera_controller import CameraController, encode_jpeg
 from pylekiwi.models import ArmCalibrationRequest, ArmCalibrationResponse, ArmJointCommand, BaseCommand, LekiwiCommand
 from pylekiwi.settings import Settings, constants
@@ -46,6 +54,31 @@ class HostControllerNode:
         self._maintenance_active = False
         self._arm_lock = threading.RLock()
 
+    def _build_status_response_locked(self, message: str) -> ArmCalibrationResponse:
+        response = get_status(
+            self._arm_controller, serial_port=self._settings.serial_port
+        )
+        response.message = message
+        response.maintenance_active = self._maintenance_active
+        return response
+
+    def _enter_arm_maintenance_locked(self) -> ArmCalibrationResponse:
+        self._maintenance_active = True
+        response = torque_off_for_manual_pose(
+            self._arm_controller, serial_port=self._settings.serial_port
+        )
+        response.maintenance_active = True
+        return response
+
+    def _exit_arm_maintenance_locked(self) -> ArmCalibrationResponse:
+        self._reset_arm_smoother_locked()
+        response = torque_on_after_manual_pose(
+            self._arm_controller, serial_port=self._settings.serial_port
+        )
+        self._maintenance_active = False
+        response.maintenance_active = False
+        return response
+
     def _reset_arm_smoother_locked(self) -> None:
         current_arm_state = self._arm_controller.get_current_state()
         current_arm_command = ArmJointCommand(
@@ -64,47 +97,57 @@ class HostControllerNode:
         self, request: ArmCalibrationRequest
     ) -> ArmCalibrationResponse:
         with self._arm_lock:
+            if request.action == "torque_off":
+                return self._enter_arm_maintenance_locked()
+
+            if request.action == "torque_on":
+                return self._exit_arm_maintenance_locked()
+
             if request.action == "status":
-                return get_status(
-                    self._arm_controller, serial_port=self._settings.serial_port
+                return self._build_status_response_locked(
+                    "Read arm calibration status."
                 )
 
             if request.action == "backup":
-                return backup_offsets(
+                response = backup_offsets(
                     self._arm_controller, serial_port=self._settings.serial_port
                 )
+                response.maintenance_active = self._maintenance_active
+                return response
 
             if request.action == "zero":
                 if request.reference_joint_angles_deg is None:
                     raise CalibrationError(
                         "reference_joint_angles_deg is required for zero."
                     )
-                self._maintenance_active = True
-                try:
-                    response = zero_to_reference_pose(
-                        self._arm_controller,
-                        serial_port=self._settings.serial_port,
-                        reference_angles_deg=request.reference_joint_angles_deg,
+                if not self._maintenance_active:
+                    raise CalibrationError(
+                        "Arm torque must be off before zero calibration. "
+                        "Run 'pylekiwi client arm off' first."
                     )
-                    self._reset_arm_smoother_locked()
-                    return response
-                finally:
-                    self._maintenance_active = False
+                response = zero_to_reference_pose(
+                    self._arm_controller,
+                    serial_port=self._settings.serial_port,
+                    reference_angles_deg=request.reference_joint_angles_deg,
+                )
+                response.maintenance_active = self._maintenance_active
+                return response
 
             if request.action == "restore":
                 if request.backup_path is None:
                     raise CalibrationError("backup_path is required for restore.")
-                self._maintenance_active = True
-                try:
-                    response = restore_offsets(
-                        self._arm_controller,
-                        serial_port=self._settings.serial_port,
-                        backup_path=request.backup_path,
+                if not self._maintenance_active:
+                    raise CalibrationError(
+                        "Arm torque must be off before restoring offsets. "
+                        "Run 'pylekiwi client arm off' first."
                     )
-                    self._reset_arm_smoother_locked()
-                    return response
-                finally:
-                    self._maintenance_active = False
+                response = restore_offsets(
+                    self._arm_controller,
+                    serial_port=self._settings.serial_port,
+                    backup_path=request.backup_path,
+                )
+                response.maintenance_active = self._maintenance_active
+                return response
 
             raise CalibrationError(f"Unsupported calibration action: {request.action}")
 
@@ -134,16 +177,13 @@ class HostControllerNode:
     def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
         command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
         logger.debug(f"Received command: {command}")
-        if self._maintenance_active:
-            logger.warning("Ignoring command while arm maintenance is active.")
-            return
         with self._arm_lock:
-            if self._maintenance_active:
-                logger.warning("Ignoring command while arm maintenance is active.")
-                return
             if command.base_command is not None:
                 self._base_controller.send_action(command.base_command)
             if command.arm_command is not None:
+                if self._maintenance_active:
+                    logger.warning("Ignoring arm command while arm maintenance is active.")
+                    return
                 if command.arm_command.command_type == "joint":
                     self._target_arm_command = command.arm_command
                 elif command.arm_command.command_type == "ee_position":

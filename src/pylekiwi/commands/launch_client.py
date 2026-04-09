@@ -26,11 +26,13 @@ app = typer.Typer(
     help="Client utilities (capture, pose, position, inching, grasp, release)",
     no_args_is_help=True,
 )
+arm_app = typer.Typer(help="Remote arm maintenance commands", no_args_is_help=True)
 pose_app = typer.Typer(help="Arm pose presets", no_args_is_help=True)
 calibrate_app = typer.Typer(
     help="Remote arm calibration utilities",
     no_args_is_help=True,
 )
+app.add_typer(arm_app, name="arm")
 app.add_typer(pose_app, name="pose")
 app.add_typer(calibrate_app, name="calibrate")
 
@@ -131,6 +133,10 @@ def _print_calibration_response(response: ArmCalibrationResponse) -> None:
         typer.echo(
             f"reference_joint_angles_deg: {list(response.reference_joint_angles_deg)}"
         )
+    if response.maintenance_active is not None:
+        typer.echo(f"maintenance_active: {response.maintenance_active}")
+    if response.torque_enabled is not None:
+        typer.echo(f"torque_enabled: {response.torque_enabled}")
     if response.verified is not None:
         typer.echo(f"verified: {response.verified}")
     if response.joint_states:
@@ -152,6 +158,45 @@ def _ensure_confirmed(
     if yes:
         return
     if not typer.confirm(message):
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# arm maintenance
+# ---------------------------------------------------------------------------
+
+
+@arm_app.command("on")
+def arm_on(ctx: typer.Context):
+    """Enable remote arm torque and resume arm control."""
+    try:
+        response = _request_calibration(
+            ArmCalibrationRequest(action="torque_on"),
+            timeout=10.0,
+            settings=_get_client_settings(ctx),
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    _print_calibration_response(response)
+    if not response.ok:
+        raise typer.Exit(code=1)
+
+
+@arm_app.command("off")
+def arm_off(ctx: typer.Context):
+    """Disable remote arm torque so the arm can be moved by hand."""
+    try:
+        response = _request_calibration(
+            ArmCalibrationRequest(action="torque_off"),
+            timeout=10.0,
+            settings=_get_client_settings(ctx),
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+    _print_calibration_response(response)
+    if not response.ok:
         raise typer.Exit(code=1)
 
 
@@ -513,7 +558,7 @@ def calibrate_zero(
         ),
     ] = False,
 ):
-    """Set the current remote arm pose as the reference pose."""
+    """Set the current remote arm pose as the reference pose after `client arm off`."""
     try:
         reference_pose = _parse_reference_pose(reference_deg)
     except ValueError as e:
@@ -561,7 +606,7 @@ def calibrate_restore(
         ),
     ] = False,
 ):
-    """Restore remote arm offsets from a host-side backup file."""
+    """Restore remote arm offsets from a host-side backup file after `client arm off`."""
     _ensure_confirmed(
         yes=yes,
         message=(

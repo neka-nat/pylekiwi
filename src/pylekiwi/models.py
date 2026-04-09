@@ -159,7 +159,7 @@ class ArmEEInchingCommand(BaseModel):
 
 
 class ArmCalibrationRequest(BaseModel):
-    action: Literal["status", "backup", "zero", "restore"]
+    action: Literal["status", "backup", "zero", "restore", "torque_off", "torque_on"]
     reference_joint_angles_deg: tuple[float, float, float, float, float] | None = None
     backup_path: str | None = None
 
@@ -174,6 +174,8 @@ class ArmCalibrationResponse(BaseModel):
     after_offsets_deg: tuple[float, float, float, float, float] | None = None
     present_joint_angles_deg: tuple[float, float, float, float, float] | None = None
     reference_joint_angles_deg: tuple[float, float, float, float, float] | None = None
+    maintenance_active: bool | None = None
+    torque_enabled: bool | None = None
     verified: bool | None = None
 
 

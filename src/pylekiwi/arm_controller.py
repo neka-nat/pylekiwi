@@ -112,6 +112,16 @@ class ArmController:
     def write_joint_lock(self, joint_id: int, locked: bool) -> None:
         self.motor_controller.write_lock(joint_id, locked)
 
+    def read_joint_torque_enabled(self) -> tuple[bool, bool, bool, bool, bool]:
+        enabled = self.motor_controller.sync_read_torque_enable(list(self.JOINT_IDS))
+        return tuple(bool(v) for v in enabled)
+
+    def read_gripper_torque_enabled(self) -> bool:
+        return bool(self.motor_controller.read_torque_enable(self.GRIPPER_ID))
+
+    def is_arm_torque_enabled(self) -> bool:
+        return all(self.read_joint_torque_enabled()) and self.read_gripper_torque_enabled()
+
     def send_joint_action(self, action: ArmJointCommand):
         target_ids = list(self.JOINT_IDS)
         if action.gripper_position is not None:
