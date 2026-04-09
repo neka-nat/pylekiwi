@@ -145,6 +145,12 @@ class HostControllerNode:
             if command.arm_command is not None:
                 if command.arm_command.command_type == "joint":
                     self._target_arm_command = command.arm_command
+                elif command.arm_command.command_type == "ee_position":
+                    self._target_arm_command = (
+                        self._arm_controller.resolve_ee_position_action(
+                            command.arm_command
+                        )
+                    )
                 elif command.arm_command.command_type == "ee_inching":
                     self._target_arm_command = (
                         self._arm_controller.resolve_ee_inching_action(

@@ -10,6 +10,7 @@ from pylekiwi.models import (
     ArmCalibrationRequest,
     ArmCalibrationResponse,
     ArmEEInchingCommand,
+    ArmEEPositionCommand,
     ArmJointCommand,
     LekiwiCommand,
 )
@@ -17,7 +18,7 @@ from pylekiwi.preset import delete_preset, list_presets, load_presets, save_pres
 from pylekiwi.settings import constants
 
 app = typer.Typer(
-    help="Client utilities (capture, pose, inching, grasp, release)",
+    help="Client utilities (capture, pose, position, inching, grasp, release)",
     no_args_is_help=True,
 )
 pose_app = typer.Typer(help="Arm pose presets", no_args_is_help=True)
@@ -235,8 +236,44 @@ def pose_delete(
 
 
 # ---------------------------------------------------------------------------
-# inching / grasp / release
+# position / inching / grasp / release
 # ---------------------------------------------------------------------------
+
+@app.command()
+def position(
+    x_mm: Annotated[
+        float,
+        typer.Option("--x-mm", help="Absolute X position in mm in the base frame."),
+    ],
+    y_mm: Annotated[
+        float,
+        typer.Option("--y-mm", help="Absolute Y position in mm in the base frame."),
+    ],
+    z_mm: Annotated[
+        float,
+        typer.Option("--z-mm", help="Absolute Z position in mm in the base frame."),
+    ],
+    gripper_deg: Annotated[
+        float | None,
+        typer.Option(
+            "--gripper-deg",
+            help="Optional gripper target in degrees. If omitted, keep the current value.",
+        ),
+    ] = None,
+):
+    """Move the end effector to an absolute position in the base frame."""
+    from pylekiwi.nodes import ClientControllerNode
+
+    node = ClientControllerNode()
+    cmd = ArmEEPositionCommand(
+        xyz=(x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0),
+        gripper_position=(
+            math.radians(gripper_deg) if gripper_deg is not None else None
+        ),
+    )
+    node.send_command(LekiwiCommand(arm_command=cmd))
+    logger.info(f"Sent base-frame position command: {cmd}")
+
 
 @app.command()
 def inching(

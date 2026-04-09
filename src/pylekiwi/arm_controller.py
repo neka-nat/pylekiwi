@@ -6,7 +6,12 @@ from rustypot import Sts3215PyController
 
 from kinpy import Transform, build_serial_chain_from_mjcf
 
-from pylekiwi.models import ArmEEInchingCommand, ArmJointCommand, ArmState
+from pylekiwi.models import (
+    ArmEEInchingCommand,
+    ArmEEPositionCommand,
+    ArmJointCommand,
+    ArmState,
+)
 from pylekiwi.settings import Settings
 
 
@@ -46,8 +51,18 @@ class ArmController:
     def forward_kinematics(self, joint_angles: tuple[float, float, float, float, float]) -> Transform:
         return self.chain.forward_kinematics(joint_angles)
 
-    def inverse_kinematics(self, transform: Transform) -> tuple[float, float, float, float, float]:
-        return self.chain.inverse_kinematics(transform)
+    def inverse_kinematics(
+        self,
+        transform: Transform,
+        initial_state: np.ndarray | None = None,
+    ) -> tuple[float, float, float, float, float]:
+        return tuple(
+            float(v)
+            for v in self.chain.inverse_kinematics(
+                transform,
+                initial_state=initial_state,
+            )
+        )
 
     def set_torque(self):
         for i in self.JOINT_IDS:
@@ -106,25 +121,51 @@ class ArmController:
             command += [action.gripper_position]
         self.motor_controller.sync_write_goal_position(target_ids, command)
 
+    def _resolve_ee_target(
+        self,
+        *,
+        target_xyz: np.ndarray,
+        gripper_position: float | None,
+    ) -> ArmJointCommand:
+        current_state = self.get_current_state()
+        current_ee = self.forward_kinematics(current_state.joint_angles)
+        target_ee = Transform(
+            rot=np.asarray(current_ee.rot, dtype=float),
+            pos=target_xyz,
+        )
+        target_joints = self.inverse_kinematics(
+            target_ee,
+            initial_state=np.asarray(current_state.joint_angles, dtype=float),
+        )
+        return ArmJointCommand(
+            joint_angles=target_joints,
+            gripper_position=(
+                gripper_position
+                if gripper_position is not None
+                else current_state.gripper_position
+            ),
+        )
+
+    def resolve_ee_position_action(
+        self, action: ArmEEPositionCommand
+    ) -> ArmJointCommand:
+        return self._resolve_ee_target(
+            target_xyz=np.asarray(action.xyz, dtype=float),
+            gripper_position=action.gripper_position,
+        )
+
+    def send_ee_position_action(self, action: ArmEEPositionCommand):
+        self.send_joint_action(self.resolve_ee_position_action(action))
+
     def resolve_ee_inching_action(
         self, action: ArmEEInchingCommand
     ) -> ArmJointCommand:
         current_state = self.get_current_state()
         current_ee = self.forward_kinematics(current_state.joint_angles)
-        target_ee = Transform(
-            rot=current_ee.rot,
-            pos=np.asarray(current_ee.pos, dtype=float)
+        return self._resolve_ee_target(
+            target_xyz=np.asarray(current_ee.pos, dtype=float)
             + np.asarray(action.delta_xyz, dtype=float),
-        )
-        target_joints = tuple(float(v) for v in self.inverse_kinematics(target_ee))
-        gripper_position = (
-            action.gripper_position
-            if action.gripper_position is not None
-            else current_state.gripper_position
-        )
-        return ArmJointCommand(
-            joint_angles=target_joints,
-            gripper_position=gripper_position,
+            gripper_position=action.gripper_position,
         )
 
     def send_ee_inching_action(self, action: ArmEEInchingCommand):
