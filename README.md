@@ -48,6 +48,7 @@ uvx pylekiwi client pose go <name_or_angles>     # preset pose name or "10,20,30
 uvx pylekiwi client pose save <name>             # save current pose
 uvx pylekiwi client pose list                    # list preset poses
 uvx pylekiwi client pose delete <name>           # delete preset pose
+uvx pylekiwi client inching --x-mm 10 --z-mm -5  # move EE delta in base frame
 uvx pylekiwi client grasp                        # grasp object
 uvx pylekiwi client release                      # release object
 ```

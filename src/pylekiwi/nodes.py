@@ -142,11 +142,19 @@ class HostControllerNode:
                 return
             if command.base_command is not None:
                 self._base_controller.send_action(command.base_command)
-            if (
-                command.arm_command is not None
-                and command.arm_command.command_type in ("joint", "ee_inching")
-            ):
-                self._target_arm_command = command.arm_command
+            if command.arm_command is not None:
+                if command.arm_command.command_type == "joint":
+                    self._target_arm_command = command.arm_command
+                elif command.arm_command.command_type == "ee_inching":
+                    self._target_arm_command = (
+                        self._arm_controller.resolve_ee_inching_action(
+                            command.arm_command
+                        )
+                    )
+                else:
+                    logger.warning(
+                        f"Unsupported arm command type: {command.arm_command.command_type}"
+                    )
 
     def run(self):
         with zenoh.open(zenoh.Config()) as session:
@@ -175,10 +183,7 @@ class HostControllerNode:
                             and self._arm_smoother is not None
                         ):
                             q, _ = self._arm_smoother.step(self._target_arm_command)
-                            if self._target_arm_command.command_type == "ee_inching":
-                                self._arm_controller.send_ee_inching_action(q)
-                            else:
-                                self._arm_controller.send_joint_action(q)
+                            self._arm_controller.send_joint_action(q)
                     # Publish camera frames
                     base_frame = self._camera_controller.get_base_frame()
                     arm_frame = self._camera_controller.get_arm_frame()

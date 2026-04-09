@@ -106,14 +106,26 @@ class ArmController:
             command += [action.gripper_position]
         self.motor_controller.sync_write_goal_position(target_ids, command)
 
-    def send_ee_inching_action(self, action: ArmEEInchingCommand):
+    def resolve_ee_inching_action(
+        self, action: ArmEEInchingCommand
+    ) -> ArmJointCommand:
         current_state = self.get_current_state()
         current_ee = self.forward_kinematics(current_state.joint_angles)
-        target_ee = current_ee * Transform(pos=action.delta_xyz)
-        target_joints = self.inverse_kinematics(target_ee)
-        self.send_joint_action(
-            ArmJointCommand(
-                joint_angles=target_joints,
-                gripper_position=current_state.gripper_position,
-            ),
+        target_ee = Transform(
+            rot=current_ee.rot,
+            pos=np.asarray(current_ee.pos, dtype=float)
+            + np.asarray(action.delta_xyz, dtype=float),
         )
+        target_joints = tuple(float(v) for v in self.inverse_kinematics(target_ee))
+        gripper_position = (
+            action.gripper_position
+            if action.gripper_position is not None
+            else current_state.gripper_position
+        )
+        return ArmJointCommand(
+            joint_angles=target_joints,
+            gripper_position=gripper_position,
+        )
+
+    def send_ee_inching_action(self, action: ArmEEInchingCommand):
+        self.send_joint_action(self.resolve_ee_inching_action(action))

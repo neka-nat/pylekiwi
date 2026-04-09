@@ -9,6 +9,7 @@ from loguru import logger
 from pylekiwi.models import (
     ArmCalibrationRequest,
     ArmCalibrationResponse,
+    ArmEEInchingCommand,
     ArmJointCommand,
     LekiwiCommand,
 )
@@ -16,7 +17,7 @@ from pylekiwi.preset import delete_preset, list_presets, load_presets, save_pres
 from pylekiwi.settings import constants
 
 app = typer.Typer(
-    help="Client utilities (capture, pose, grasp, release)",
+    help="Client utilities (capture, pose, inching, grasp, release)",
     no_args_is_help=True,
 )
 pose_app = typer.Typer(help="Arm pose presets", no_args_is_help=True)
@@ -234,8 +235,51 @@ def pose_delete(
 
 
 # ---------------------------------------------------------------------------
-# grasp / release
+# inching / grasp / release
 # ---------------------------------------------------------------------------
+
+@app.command()
+def inching(
+    x_mm: Annotated[
+        float,
+        typer.Option("--x-mm", help="X-axis increment in mm in the base frame."),
+    ] = 0.0,
+    y_mm: Annotated[
+        float,
+        typer.Option("--y-mm", help="Y-axis increment in mm in the base frame."),
+    ] = 0.0,
+    z_mm: Annotated[
+        float,
+        typer.Option("--z-mm", help="Z-axis increment in mm in the base frame."),
+    ] = 0.0,
+    gripper_deg: Annotated[
+        float | None,
+        typer.Option(
+            "--gripper-deg",
+            help="Optional gripper target in degrees. If omitted, keep the current value.",
+        ),
+    ] = None,
+):
+    """Move the end effector by a small delta in the base frame."""
+    from pylekiwi.nodes import ClientControllerNode
+
+    delta_xyz = (x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0)
+    gripper_position = (
+        math.radians(gripper_deg) if gripper_deg is not None else None
+    )
+
+    if delta_xyz == (0.0, 0.0, 0.0) and gripper_position is None:
+        logger.error("Specify a non-zero delta or --gripper-deg")
+        raise typer.Exit(code=1)
+
+    node = ClientControllerNode()
+    cmd = ArmEEInchingCommand(
+        delta_xyz=delta_xyz,
+        gripper_position=gripper_position,
+    )
+    node.send_command(LekiwiCommand(arm_command=cmd))
+    logger.info(f"Sent base-frame inching command: {cmd}")
+
 
 GRIPPER_CLOSED = math.radians(60.0)  # ~1.047 rad
 GRIPPER_OPEN = 0.0
