@@ -4,10 +4,11 @@ import numpy as np
 from loguru import logger
 from rustypot import Sts3215PyController
 
-from kinpy import Transform, build_serial_chain_from_mjcf
+from kinpy import Transform, build_chain_from_mjcf, build_serial_chain_from_mjcf
 
 from pylekiwi.models import (
     ArmEEInchingCommand,
+    ArmLinkPose,
     ArmEEPositionCommand,
     ArmJointCommand,
     ArmState,
@@ -55,6 +56,11 @@ class ArmController:
             "gripper",
             model_dir=os.path.dirname(_MODEL_FILE),
         )
+        self.full_chain = build_chain_from_mjcf(
+            open(_MODEL_FILE, "rb").read(),
+            model_dir=os.path.dirname(_MODEL_FILE),
+        )
+        self._full_chain_joint_names = tuple(self.full_chain.get_joint_parameter_names())
 
     def forward_kinematics(self, joint_angles: tuple[float, float, float, float, float]) -> Transform:
         return self.chain.forward_kinematics(joint_angles)
@@ -95,6 +101,48 @@ class ArmController:
             gripper_position=gripper_position,
             torque_enabled=self.is_arm_torque_enabled(),
         )
+
+    def get_link_frame_names(self) -> list[str]:
+        zero_joints = {name: 0.0 for name in self._full_chain_joint_names}
+        transforms = self.full_chain.forward_kinematics(zero_joints)
+        return list(transforms.keys())
+
+    def get_link_poses(
+        self,
+        joint_angles: tuple[float, float, float, float, float],
+        gripper_position: float | None,
+        frame_names: list[str] | None = None,
+    ) -> list[ArmLinkPose]:
+        if gripper_position is None:
+            raise ValueError("gripper_position is required to compute link poses.")
+
+        joint_values = dict(
+            zip(
+                self._full_chain_joint_names,
+                [*joint_angles, gripper_position],
+                strict=True,
+            )
+        )
+        transforms = self.full_chain.forward_kinematics(joint_values)
+        selected_frame_names = frame_names or list(transforms.keys())
+        missing_frame_names = [
+            frame_name
+            for frame_name in selected_frame_names
+            if frame_name not in transforms
+        ]
+        if missing_frame_names:
+            raise ValueError(
+                "Unknown frame names: " + ", ".join(missing_frame_names)
+            )
+
+        return [
+            ArmLinkPose(
+                frame_name=frame_name,
+                xyz_m=tuple(float(v) for v in transforms[frame_name].pos),
+                quat_wxyz=tuple(float(v) for v in transforms[frame_name].rot),
+            )
+            for frame_name in selected_frame_names
+        ]
 
     def read_joint_positions(self) -> tuple[float, float, float, float, float]:
         positions = self.motor_controller.sync_read_present_position(list(self.JOINT_IDS))

@@ -22,6 +22,12 @@ class ArmState(BaseModel):
     torque_enabled: bool | None = None
 
 
+class ArmLinkPose(BaseModel):
+    frame_name: str
+    xyz_m: tuple[float, float, float]
+    quat_wxyz: tuple[float, float, float, float]
+
+
 class ArmCalibrationJointState(BaseModel):
     joint_id: int
     raw_present_position: int
@@ -183,6 +189,18 @@ class ArmCalibrationResponse(BaseModel):
 
 class RobotStateRequest(BaseModel):
     pass
+
+
+class ArmLinksRequest(BaseModel):
+    source: Literal["actual", "command"]
+    frame_names: list[str] = Field(default_factory=list)
+
+
+class ArmLinksResponse(BaseModel):
+    ok: bool
+    source: Literal["actual", "command"] | None = None
+    link_poses: list[ArmLinkPose] = Field(default_factory=list)
+    error: str | None = None
 
 
 class RobotStateResponse(BaseModel):

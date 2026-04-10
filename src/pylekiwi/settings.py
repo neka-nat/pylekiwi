@@ -30,6 +30,7 @@ class Constants(BaseModel):
     )
     COMMAND_KEY: str = "lekiwi/command"
     ROBOT_STATE_KEY: str = "lekiwi/state"
+    ARM_LINKS_KEY: str = "lekiwi/arm/links"
     BASE_CAMERA_KEY: str = "lekiwi/camera/base"
     ARM_CAMERA_KEY: str = "lekiwi/camera/arm"
     ARM_CALIBRATION_KEY: str = "lekiwi/maintenance/arm/calibration"

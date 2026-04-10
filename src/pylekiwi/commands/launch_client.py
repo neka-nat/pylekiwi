@@ -10,6 +10,8 @@ from pylekiwi.models import (
     ArmCalibrationRequest,
     ArmCalibrationResponse,
     ArmEEInchingCommand,
+    ArmLinksRequest,
+    ArmLinksResponse,
     ArmEEPositionCommand,
     ArmJointCommand,
     LekiwiCommand,
@@ -134,6 +136,33 @@ def _request_robot_state(
     raise RuntimeError("No state reply received from host.")
 
 
+def _request_arm_links(
+    request: ArmLinksRequest,
+    *,
+    timeout: float,
+    settings: Settings,
+) -> ArmLinksResponse:
+    with zenoh.open(create_zenoh_config(settings)) as session:
+        replies = session.get(
+            constants.ARM_LINKS_KEY,
+            timeout=timeout,
+            payload=request.model_dump_json(),
+            encoding=zenoh.Encoding.APPLICATION_JSON,
+        )
+        errors: list[str] = []
+        for reply in replies:
+            if reply.ok is not None:
+                return ArmLinksResponse.model_validate_json(
+                    reply.ok.payload.to_string()
+                )
+            if reply.err is not None:
+                errors.append(reply.err.payload.to_string())
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+    raise RuntimeError("No arm links reply received from host.")
+
+
 def _parse_reference_pose(target: str) -> tuple[float, float, float, float, float]:
     parts = [float(x.strip()) for x in target.split(",")]
     if len(parts) != 5:
@@ -212,6 +241,17 @@ def _print_robot_state(response: RobotStateResponse) -> None:
         typer.echo(f"  torque_enabled: {response.arm_state.torque_enabled}")
 
 
+def _print_arm_links_response(response: ArmLinksResponse) -> None:
+    if response.source is not None:
+        typer.echo(f"source: {response.source}")
+    if response.error is not None:
+        typer.echo(f"error: {response.error}")
+    for link_pose in response.link_poses:
+        xyz = [round(v, 4) for v in link_pose.xyz_m]
+        quat = [round(v, 4) for v in link_pose.quat_wxyz]
+        typer.echo(f"{link_pose.frame_name}: xyz_m={xyz} quat_wxyz={quat}")
+
+
 # ---------------------------------------------------------------------------
 # arm maintenance
 # ---------------------------------------------------------------------------
@@ -247,6 +287,48 @@ def arm_off(ctx: typer.Context):
         logger.error(str(e))
         raise typer.Exit(code=1)
     _print_calibration_response(response)
+    if not response.ok:
+        raise typer.Exit(code=1)
+
+
+@arm_app.command("links")
+def arm_links(
+    ctx: typer.Context,
+    source: Annotated[
+        str,
+        typer.Argument(help="Link pose source: actual or command."),
+    ],
+    frame: Annotated[
+        list[str],
+        typer.Option(
+            "--frame",
+            help="Frame name to include. Repeat for multiple frames.",
+        ),
+    ] = [],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the raw links response as JSON."),
+    ] = False,
+):
+    """Read remote arm link poses computed from the requested source angles."""
+    if source not in {"actual", "command"}:
+        logger.error("source must be either 'actual' or 'command'")
+        raise typer.Exit(code=1)
+
+    try:
+        response = _request_arm_links(
+            ArmLinksRequest(source=source, frame_names=frame),
+            timeout=5.0,
+            settings=_get_client_settings(ctx),
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(response.model_dump_json(indent=2))
+    else:
+        _print_arm_links_response(response)
     if not response.ok:
         raise typer.Exit(code=1)
 

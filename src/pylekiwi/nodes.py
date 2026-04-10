@@ -28,6 +28,8 @@ from pylekiwi.models import (
     ArmCalibrationRequest,
     ArmCalibrationResponse,
     ArmJointCommand,
+    ArmLinksRequest,
+    ArmLinksResponse,
     BaseCommand,
     LekiwiCommand,
     RobotStateResponse,
@@ -77,6 +79,34 @@ class HostControllerNode:
             maintenance_active=self._maintenance_active,
             arm_state=self._arm_controller.get_current_state(),
             base_state=self._base_controller.get_current_state(),
+        )
+
+    def _build_arm_links_response_locked(
+        self, request: ArmLinksRequest
+    ) -> ArmLinksResponse:
+        current_arm_state = self._arm_controller.get_current_state()
+        if request.source == "actual":
+            return ArmLinksResponse(
+                ok=True,
+                source=request.source,
+                link_poses=self._arm_controller.get_link_poses(
+                    current_arm_state.joint_angles,
+                    current_arm_state.gripper_position,
+                    request.frame_names or None,
+                ),
+            )
+        if self._target_arm_command is None:
+            raise ValueError("No arm command is currently available.")
+        return ArmLinksResponse(
+            ok=True,
+            source=request.source,
+            link_poses=self._arm_controller.get_link_poses(
+                self._target_arm_command.joint_angles,
+                self._target_arm_command.gripper_position
+                if self._target_arm_command.gripper_position is not None
+                else current_arm_state.gripper_position,
+                request.frame_names or None,
+            ),
         )
 
     def _enter_arm_maintenance_locked(self) -> ArmCalibrationResponse:
@@ -213,6 +243,31 @@ class HostControllerNode:
                 encoding=zenoh.Encoding.APPLICATION_JSON,
             )
 
+    def _listener_arm_links_query(self, query: zenoh.Query) -> None:
+        with query:
+            request: ArmLinksRequest | None = None
+            try:
+                if query.payload is None:
+                    raise ValueError("Missing arm links request payload.")
+                request = ArmLinksRequest.model_validate_json(
+                    query.payload.to_string()
+                )
+                with self._arm_lock:
+                    response = self._build_arm_links_response_locked(request)
+            except Exception as e:
+                logger.exception("Arm links request failed")
+                response = ArmLinksResponse(
+                    ok=False,
+                    source=request.source if request is not None else None,
+                    error=str(e),
+                )
+
+            query.reply(
+                constants.ARM_LINKS_KEY,
+                response.model_dump_json(),
+                encoding=zenoh.Encoding.APPLICATION_JSON,
+            )
+
     def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
         command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
         logger.debug(f"Received command: {command}")
@@ -248,6 +303,9 @@ class HostControllerNode:
             state_queryable = session.declare_queryable(
                 constants.ROBOT_STATE_KEY, self._listener_robot_state_query
             )
+            arm_links_queryable = session.declare_queryable(
+                constants.ARM_LINKS_KEY, self._listener_arm_links_query
+            )
             calibration_queryable = session.declare_queryable(
                 constants.ARM_CALIBRATION_KEY, self._listener_arm_calibration_query
             )
@@ -260,6 +318,7 @@ class HostControllerNode:
                 logger.error(f"Error initializing arm smoother: {e}")
                 sub.undeclare()
                 state_queryable.undeclare()
+                arm_links_queryable.undeclare()
                 calibration_queryable.undeclare()
                 return
             logger.info("Starting host controller node...")
@@ -287,6 +346,7 @@ class HostControllerNode:
             finally:
                 sub.undeclare()
                 state_queryable.undeclare()
+                arm_links_queryable.undeclare()
                 calibration_queryable.undeclare()
 
 
