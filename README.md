@@ -50,9 +50,22 @@ uvx pylekiwi client pose list                    # list preset poses
 uvx pylekiwi client pose delete <name>           # delete preset pose
 uvx pylekiwi client position --x-mm 180 --y-mm 0 --z-mm 120  # move EE to absolute position in base frame
 uvx pylekiwi client inching --x-mm 10 --z-mm -5  # move EE delta in base frame
+uvx pylekiwi client arm links actual --frame lekiwi_chassis  # inspect the modeled chassis frame
+uvx pylekiwi client arm links actual --frame lekiwi_base_camera_mount  # inspect the CAD camera-body frame
+uvx pylekiwi client arm links actual --frame lekiwi_base_camera_optical  # inspect the approximate camera optical-center frame
+uvx pylekiwi client arm links actual --frame wrist_camera_mount  # inspect the wrist camera mount and optical frame
 uvx pylekiwi client grasp                        # grasp object
 uvx pylekiwi client release                      # release object
 ```
+
+The `lekiwi_chassis` and `lekiwi_base_camera_mount` frames are now seeded from the
+public LeKiwi CAD/URDF rather than placeholders. `lekiwi_base_camera_mount` tracks
+the upstream CAD camera-body link, and `lekiwi_base_camera_optical` adds an
+approximate lens-center frame derived from the CAD mesh.
+
+Referenced LeKiwi CAD sources:
+- Public Fusion 360 CAD: <https://a360.co/4k1P8yO>
+- Upstream LeKiwi URDF exported from CAD: <https://github.com/SIGRobotics-UIUC/LeKiwi/blob/main/URDF/LeKiwi.urdf>
 
 If automatic discovery does not work across machines, you can connect explicitly to the robot:
 

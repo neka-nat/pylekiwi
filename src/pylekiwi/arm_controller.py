@@ -16,7 +16,9 @@ from pylekiwi.models import (
 from pylekiwi.settings import Settings
 
 
-_MODEL_FILE = os.path.join(os.path.dirname(__file__), "data/SO101/so101_new_calib.xml")
+_MODEL_FILE = os.path.join(
+    os.path.dirname(__file__), "data/SO101/lekiwi_so101_new_calib.xml"
+)
 
 
 class ArmController:
