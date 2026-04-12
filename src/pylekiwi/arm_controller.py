@@ -4,7 +4,7 @@ import numpy as np
 from loguru import logger
 from rustypot import Sts3215PyController
 
-from kinpy import Transform, build_chain_from_mjcf, build_serial_chain_from_mjcf
+from kinpy import Transform, build_serial_chain_from_mjcf
 
 from pylekiwi.models import (
     ArmEEInchingCommand,
@@ -53,17 +53,13 @@ class ArmController:
 
         self.chain = build_serial_chain_from_mjcf(
             open(_MODEL_FILE, "rb").read(),
-            "gripper",
+            "moving_jaw_so101_v1",
             model_dir=os.path.dirname(_MODEL_FILE),
         )
-        self.full_chain = build_chain_from_mjcf(
-            open(_MODEL_FILE, "rb").read(),
-            model_dir=os.path.dirname(_MODEL_FILE),
-        )
-        self._full_chain_joint_names = tuple(self.full_chain.get_joint_parameter_names())
+        self._chain_joint_names = tuple(self.chain.get_joint_parameter_names())
 
     def forward_kinematics(self, joint_angles: tuple[float, float, float, float, float]) -> Transform:
-        return self.chain.forward_kinematics(joint_angles)
+        return self.chain.forward_kinematics(list(joint_angles) + [0.0])  # add gripper joint angle
 
     def inverse_kinematics(
         self,
@@ -75,7 +71,7 @@ class ArmController:
             for v in self.chain.inverse_kinematics(
                 transform,
                 initial_state=initial_state,
-            )
+            )[:-1]   # exclude gripper joint
         )
 
     def set_torque(self):
@@ -103,8 +99,7 @@ class ArmController:
         )
 
     def get_link_frame_names(self) -> list[str]:
-        zero_joints = {name: 0.0 for name in self._full_chain_joint_names}
-        transforms = self.full_chain.forward_kinematics(zero_joints)
+        transforms = self.chain.forward_kinematics({}, end_only=False)
         return list(transforms.keys())
 
     def get_link_poses(
@@ -118,12 +113,12 @@ class ArmController:
 
         joint_values = dict(
             zip(
-                self._full_chain_joint_names,
+                self._chain_joint_names,
                 [*joint_angles, gripper_position],
                 strict=True,
             )
         )
-        transforms = self.full_chain.forward_kinematics(joint_values)
+        transforms = self.chain.forward_kinematics(joint_values, end_only=False)
         selected_frame_names = frame_names or list(transforms.keys())
         missing_frame_names = [
             frame_name
