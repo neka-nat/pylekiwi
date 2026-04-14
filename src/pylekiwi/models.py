@@ -3,6 +3,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+JointAngles = tuple[float, float, float, float, float]
+
+
 class BaseState(BaseModel):
     x_vel: float
     y_vel: float
@@ -17,7 +20,7 @@ class BaseCommand(BaseModel):
 
 
 class ArmState(BaseModel):
-    joint_angles: tuple[float, float, float, float, float]
+    joint_angles: JointAngles
     gripper_position: float | None = None
     torque_enabled: bool | None = None
 
@@ -37,14 +40,41 @@ class ArmCalibrationJointState(BaseModel):
 
 class ArmJointCommand(BaseModel):
     command_type: Literal["joint"] = "joint"
-    joint_angles: tuple[float, float, float, float, float]
+    joint_angles: JointAngles | None
     gripper_position: float | None = None
 
+    def resolved(
+        self,
+        *,
+        joint_angles: JointAngles,
+        gripper_position: float | None,
+    ) -> "ArmJointCommand":
+        return ArmJointCommand(
+            command_type=self.command_type,
+            joint_angles=(
+                self.joint_angles if self.joint_angles is not None else joint_angles
+            ),
+            gripper_position=(
+                self.gripper_position
+                if self.gripper_position is not None
+                else gripper_position
+            ),
+        )
+
+    def require_joint_angles(self) -> JointAngles:
+        if self.joint_angles is None:
+            raise ValueError(
+                "ArmJointCommand joint_angles must be resolved before use."
+            )
+        return self.joint_angles
+
     def __add__(self, other: "ArmJointCommand") -> "ArmJointCommand":
+        self_joint_angles = self.require_joint_angles()
+        other_joint_angles = other.require_joint_angles()
         return ArmJointCommand(
             command_type=self.command_type,
             joint_angles=tuple(
-                a + b for a, b in zip(self.joint_angles, other.joint_angles)
+                a + b for a, b in zip(self_joint_angles, other_joint_angles)
             ),
             gripper_position=(
                 self.gripper_position + other.gripper_position
@@ -57,10 +87,12 @@ class ArmJointCommand(BaseModel):
         )
 
     def __sub__(self, other: "ArmJointCommand") -> "ArmJointCommand":
+        self_joint_angles = self.require_joint_angles()
+        other_joint_angles = other.require_joint_angles()
         return ArmJointCommand(
             command_type=self.command_type,
             joint_angles=tuple(
-                a - b for a, b in zip(self.joint_angles, other.joint_angles)
+                a - b for a, b in zip(self_joint_angles, other_joint_angles)
             ),
             gripper_position=(
                 self.gripper_position - other.gripper_position
@@ -73,30 +105,35 @@ class ArmJointCommand(BaseModel):
         )
 
     def __mul__(self, other: float) -> "ArmJointCommand":
+        self_joint_angles = self.require_joint_angles()
         return ArmJointCommand(
             command_type=self.command_type,
-            joint_angles=tuple(a * other for a in self.joint_angles),
+            joint_angles=tuple(a * other for a in self_joint_angles),
             gripper_position=self.gripper_position * other
             if self.gripper_position is not None
             else self.gripper_position
         )
 
     def __truediv__(self, other: float) -> "ArmJointCommand":
+        self_joint_angles = self.require_joint_angles()
         return ArmJointCommand(
             command_type=self.command_type,
-            joint_angles=tuple(a / other for a in self.joint_angles),
+            joint_angles=tuple(a / other for a in self_joint_angles),
             gripper_position=self.gripper_position / other
             if self.gripper_position is not None
             else self.gripper_position
         )
 
     def clip(self, lo: "ArmJointCommand", hi: "ArmJointCommand") -> "ArmJointCommand":
+        self_joint_angles = self.require_joint_angles()
+        lo_joint_angles = lo.require_joint_angles()
+        hi_joint_angles = hi.require_joint_angles()
         return ArmJointCommand(
             command_type=self.command_type,
             joint_angles=tuple(
                 max(lo, min(a, hi))
                 for a, lo, hi in zip(
-                    self.joint_angles, lo.joint_angles, hi.joint_angles
+                    self_joint_angles, lo_joint_angles, hi_joint_angles
                 )
             ),
             gripper_position=(

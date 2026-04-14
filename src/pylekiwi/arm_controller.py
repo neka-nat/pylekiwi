@@ -187,7 +187,7 @@ class ArmController:
         target_ids = list(self.JOINT_IDS)
         if action.gripper_position is not None:
             target_ids += [self.GRIPPER_ID]
-        command = list(action.joint_angles)
+        command = list(action.require_joint_angles())
         if action.gripper_position is not None:
             command += [action.gripper_position]
         self.motor_controller.sync_write_goal_position(target_ids, command)

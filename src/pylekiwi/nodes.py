@@ -101,7 +101,7 @@ class HostControllerNode:
             ok=True,
             source=request.source,
             link_poses=self._arm_controller.get_link_poses(
-                self._target_arm_command.joint_angles,
+                self._target_arm_command.require_joint_angles(),
                 self._target_arm_command.gripper_position
                 if self._target_arm_command.gripper_position is not None
                 else current_arm_state.gripper_position,
@@ -139,6 +139,21 @@ class HostControllerNode:
             dt=self._dt,
         )
         self._target_arm_command = current_arm_command
+
+    def _resolve_joint_command_locked(
+        self, command: ArmJointCommand
+    ) -> ArmJointCommand:
+        if self._target_arm_command is not None:
+            return command.resolved(
+                joint_angles=self._target_arm_command.require_joint_angles(),
+                gripper_position=self._target_arm_command.gripper_position,
+            )
+
+        current_arm_state = self._arm_controller.get_current_state()
+        return command.resolved(
+            joint_angles=current_arm_state.joint_angles,
+            gripper_position=current_arm_state.gripper_position,
+        )
 
     def _handle_arm_calibration_request(
         self, request: ArmCalibrationRequest
@@ -279,7 +294,9 @@ class HostControllerNode:
                     logger.warning("Ignoring arm command while arm maintenance is active.")
                     return
                 if command.arm_command.command_type == "joint":
-                    self._target_arm_command = command.arm_command
+                    self._target_arm_command = self._resolve_joint_command_locked(
+                        command.arm_command
+                    )
                 elif command.arm_command.command_type == "ee_position":
                     self._target_arm_command = (
                         self._arm_controller.resolve_ee_position_action(

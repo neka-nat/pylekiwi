@@ -627,7 +627,7 @@ def grasp(ctx: typer.Context):
     )
     cmd = LekiwiCommand(
         arm_command=ArmJointCommand(
-            joint_angles=(0.0, 0.0, 0.0, 0.0, 0.0),
+            joint_angles=None,
             gripper_position=GRIPPER_CLOSED,
         ),
     )
@@ -652,7 +652,7 @@ def release(ctx: typer.Context):
     )
     cmd = LekiwiCommand(
         arm_command=ArmJointCommand(
-            joint_angles=(0.0, 0.0, 0.0, 0.0, 0.0),
+            joint_angles=None,
             gripper_position=GRIPPER_OPEN,
         ),
     )
