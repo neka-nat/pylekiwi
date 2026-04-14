@@ -68,6 +68,8 @@ class ArmController:
         transform: Transform,
         initial_state: np.ndarray | None = None,
     ) -> tuple[float, float, float, float, float]:
+        if len(initial_state) == len(self.JOINT_IDS):
+            initial_state = np.r_[initial_state, 0]
         return tuple(
             float(v)
             for v in self.chain.inverse_kinematics(
