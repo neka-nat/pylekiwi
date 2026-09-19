@@ -1,6 +1,6 @@
 [project]
 name = "pylekiwi"
-version = "0.13.0"
+version = "0.13.1"
 description = "Python package for controlling the LeKiwi robot"
 readme = "README.md"
 authors = [
