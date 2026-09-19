@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 JointAngles = tuple[float, float, float, float, float]
@@ -249,7 +249,68 @@ class RobotStateResponse(BaseModel):
     base_state: BaseState | None = None
 
 
+class CommandLeaseRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=128)
+    validity_s: float = Field(gt=0, le=60, allow_inf_nan=False)
+
+
+class CommandLease(BaseModel):
+    host_id: str = Field(min_length=1, max_length=128)
+    client_id: str = Field(min_length=1, max_length=128)
+    lease_id: str = Field(min_length=1, max_length=128)
+    issued_at_monotonic_ns: int = Field(ge=0)
+    expires_at_monotonic_ns: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def ordered_times(self):
+        if self.expires_at_monotonic_ns <= self.issued_at_monotonic_ns:
+            raise ValueError("Lease expiry must follow issue time.")
+        return self
+
+
+class CommandLeaseResponse(BaseModel):
+    ok: bool
+    lease: CommandLease | None = None
+    error: str | None = None
+
+
+class ControlEnvelope(BaseModel):
+    lease: CommandLease
+    sequence: int = Field(ge=0)
+
+
+class CameraFrameMetadata(BaseModel):
+    schema_version: Literal[1] = 1
+    host_id: str
+    camera: Literal["base", "arm"]
+    frame_id: int = Field(ge=0)
+    # OpenCV does not expose a reliable sensor exposure timestamp. These are
+    # host-side read times, and do not bound time spent in driver buffering.
+    timestamp_source: Literal["opencv_read"] = "opencv_read"
+    read_started_monotonic_ns: int = Field(ge=0)
+    read_completed_monotonic_ns: int = Field(ge=0)
+    arm_state: ArmState | None = None
+    arm_state_started_monotonic_ns: int | None = Field(default=None, ge=0)
+    arm_state_completed_monotonic_ns: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def ordered_times(self):
+        if self.read_completed_monotonic_ns < self.read_started_monotonic_ns:
+            raise ValueError("Camera read timestamps are out of order.")
+        times = (
+            self.arm_state_started_monotonic_ns,
+            self.arm_state_completed_monotonic_ns,
+        )
+        if self.arm_state is None:
+            if any(value is not None for value in times):
+                raise ValueError("State timestamps require an arm state.")
+        elif any(value is None for value in times) or times[0] > times[1]:
+            raise ValueError("Arm state requires ordered sampling timestamps.")
+        return self
+
+
 class LekiwiCommand(BaseModel):
+    envelope: ControlEnvelope | None = None
     base_command: BaseCommand | None = None
     arm_command: ArmJointCommand | ArmEEPositionCommand | ArmEEInchingCommand | None = (
         None

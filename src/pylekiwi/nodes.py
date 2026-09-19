@@ -1,9 +1,11 @@
 import time
 import threading
+from uuid import uuid4
 
 import cv2
 import numpy as np
 import zenoh
+
 try:
     import rerun as rr
 except ImportError:
@@ -31,8 +33,18 @@ from pylekiwi.models import (
     ArmLinksRequest,
     ArmLinksResponse,
     BaseCommand,
+    CameraFrameMetadata,
+    CommandLeaseRequest,
+    CommandLeaseResponse,
+    ControlEnvelope,
     LekiwiCommand,
     RobotStateResponse,
+)
+from pylekiwi.control import CommandGuard
+from pylekiwi.observation import (
+    CameraObservation,
+    decode_observation,
+    encode_observation,
 )
 from pylekiwi.settings import Settings, constants
 from pylekiwi.smoother import AccelLimitedSmoother
@@ -40,8 +52,7 @@ from pylekiwi.zenoh_config import create_zenoh_config
 
 
 class HostControllerNode:
-    """Host controller node that receives commands and sends them to the base and arm controllers.
-    """
+    """Host controller node that receives commands and sends them to the base and arm controllers."""
 
     def __init__(self, settings: Settings | None = None):
         settings = settings or Settings()
@@ -61,7 +72,17 @@ class HostControllerNode:
         self._arm_smoother: AccelLimitedSmoother | None = None
         self._dt = constants.DT
         self._maintenance_active = False
+        # All serial I/O (arm AND base) shares this lock. Camera reads and IK
+        # optimization must never hold it.
         self._arm_lock = threading.RLock()
+        self._command_guard = CommandGuard(
+            max_validity_s=settings.command_validity_s,
+            base_max_validity_s=settings.base_command_validity_s,
+        )
+        self._base_deadline_ns: int | None = None
+        self._arm_deadline_ns: int | None = None
+        self._arm_generation = 0
+        self._stop_event = threading.Event()
 
     def _build_status_response_locked(self, message: str) -> ArmCalibrationResponse:
         response = get_status(
@@ -111,6 +132,9 @@ class HostControllerNode:
 
     def _enter_arm_maintenance_locked(self) -> ArmCalibrationResponse:
         self._maintenance_active = True
+        self._arm_deadline_ns = None
+        self._target_arm_command = None
+        self._arm_generation += 1
         response = torque_off_for_manual_pose(
             self._arm_controller, serial_port=self._settings.serial_port
         )
@@ -139,6 +163,9 @@ class HostControllerNode:
             dt=self._dt,
         )
         self._target_arm_command = current_arm_command
+        self._last_arm_command = current_arm_command
+        self._arm_deadline_ns = None
+        self._arm_generation += 1
 
     def _resolve_joint_command_locked(
         self, command: ArmJointCommand
@@ -283,93 +310,243 @@ class HostControllerNode:
                 encoding=zenoh.Encoding.APPLICATION_JSON,
             )
 
-    def _listener(self, msg: zenoh.Sample) -> zenoh.Reply:
-        command: LekiwiCommand = LekiwiCommand.model_validate_json(msg.payload.to_string())
-        logger.debug(f"Received command: {command}")
+    def _listener_command_lease_query(self, query: zenoh.Query) -> None:
+        with query:
+            try:
+                if query.payload is None:
+                    raise ValueError("Missing command lease request.")
+                request = CommandLeaseRequest.model_validate_json(
+                    query.payload.to_string()
+                )
+                with self._arm_lock:
+                    lease = self._command_guard.issue(request)
+                response = CommandLeaseResponse(ok=True, lease=lease)
+            except Exception as error:
+                response = CommandLeaseResponse(ok=False, error=str(error))
+            query.reply(
+                constants.COMMAND_LEASE_KEY,
+                response.model_dump_json(),
+                encoding=zenoh.Encoding.APPLICATION_JSON,
+            )
+
+    def _hold_arm_locked(self) -> None:
+        # Retain the last commanded position and reset smoother velocity. Do not
+        # disable torque (which could drop a held object), or continue to the old target.
+        if self._arm_smoother is not None and not self._maintenance_active:
+            hold = self._last_arm_command
+            self._arm_smoother.q = hold
+            self._target_arm_command = hold
+            self._arm_smoother.v = hold - hold
+            self._arm_controller.send_joint_action(hold)
+        self._arm_deadline_ns = None
+        self._arm_generation += 1
+
+    def _expire_commands_locked(self) -> None:
+        now = time.monotonic_ns()
+        if self._base_deadline_ns is not None and now >= self._base_deadline_ns:
+            try:
+                self._base_controller.stop()
+                self._base_deadline_ns = None
+            except Exception:
+                logger.exception("Failed to stop expired base command; will retry")
+        if self._arm_deadline_ns is not None and now >= self._arm_deadline_ns:
+            try:
+                self._hold_arm_locked()
+            except Exception:
+                logger.exception("Failed to hold expired arm command; will retry")
+
+    def _handle_command(self, command: LekiwiCommand) -> None:
         with self._arm_lock:
-            if command.base_command is not None:
-                self._base_controller.send_action(command.base_command)
-            if command.arm_command is not None:
-                if self._maintenance_active:
-                    logger.warning("Ignoring arm command while arm maintenance is active.")
-                    return
-                if command.arm_command.command_type == "joint":
-                    self._target_arm_command = self._resolve_joint_command_locked(
-                        command.arm_command
-                    )
-                elif command.arm_command.command_type == "ee_position":
-                    self._target_arm_command = (
-                        self._arm_controller.resolve_ee_position_action(
-                            command.arm_command
-                        )
-                    )
-                elif command.arm_command.command_type == "ee_inching":
-                    self._target_arm_command = (
-                        self._arm_controller.resolve_ee_inching_action(
-                            command.arm_command
-                        )
-                    )
+            if self._stop_event.is_set():
+                raise ValueError("Host is stopping.")
+            self._expire_commands_locked()
+            self._command_guard.validate(command)
+            if command.arm_command is not None and self._maintenance_active:
+                raise ValueError("Arm maintenance is active.")
+            generation = self._arm_generation
+            arm_command = command.arm_command
+            state = None
+            if arm_command is not None:
+                if arm_command.command_type == "joint":
+                    arm_command = self._resolve_joint_command_locked(arm_command)
                 else:
-                    logger.warning(
-                        f"Unsupported arm command type: {command.arm_command.command_type}"
+                    state = self._arm_controller.get_current_state()
+
+        # The five-variable optimizer can take longer than a command's lease.
+        # Motor control/watchdog continues while this callback computes.
+        if arm_command is not None and state is not None:
+            if arm_command.command_type == "ee_position":
+                arm_command = self._arm_controller.resolve_ee_position_action(
+                    arm_command, current_state=state
+                )
+            else:
+                arm_command = self._arm_controller.resolve_ee_inching_action(
+                    arm_command, current_state=state
+                )
+
+        with self._arm_lock:
+            if self._stop_event.is_set():
+                raise ValueError("Host is stopping.")
+            self._expire_commands_locked()
+            deadline = self._command_guard.validate(command, reserve=False)
+            if command.arm_command is not None and (
+                self._maintenance_active or generation != self._arm_generation
+            ):
+                raise ValueError("Arm state changed while preparing the command.")
+            if command.base_command is not None:
+                # Set deadline BEFORE I/O so a partially failed write is stopped too.
+                self._base_deadline_ns = deadline
+                self._base_controller.send_action(command.base_command)
+            # Serial I/O itself may have consumed the remainder of the lease.
+            if time.monotonic_ns() >= deadline:
+                self._expire_commands_locked()
+                raise ValueError("Command expired during motor I/O.")
+            if arm_command is not None:
+                self._target_arm_command = arm_command
+                self._arm_deadline_ns = deadline
+                self._arm_generation += 1
+
+    def _listener(self, msg: zenoh.Sample) -> None:
+        try:
+            command = LekiwiCommand.model_validate_json(msg.payload.to_string())
+            self._handle_command(command)
+        except Exception as error:
+            logger.warning(f"Rejected robot command: {error}")
+
+    def _control_step(self) -> None:
+        with self._arm_lock:
+            self._expire_commands_locked()
+            if (
+                not self._maintenance_active
+                and self._arm_deadline_ns is not None
+                and time.monotonic_ns() < self._arm_deadline_ns
+                and self._target_arm_command is not None
+                and self._arm_smoother is not None
+            ):
+                q, _ = self._arm_smoother.step(self._target_arm_command)
+                self._arm_controller.send_joint_action(q)
+                self._last_arm_command = q
+
+    def _camera_loop(self, camera: str, publisher, legacy_publisher) -> None:
+        get_frame = (
+            self._camera_controller.get_base_frame
+            if camera == "base"
+            else self._camera_controller.get_arm_frame
+        )
+        frame_id = 0
+        while not self._stop_event.is_set():
+            try:
+                # A nearby, explicitly timestamped state sample, NOT an assertion
+                # that this is the exact arm pose at sensor exposure time.
+                with self._arm_lock:
+                    state_start = time.monotonic_ns()
+                    state = self._arm_controller.get_current_state()
+                    state_end = time.monotonic_ns()
+                read_start = time.monotonic_ns()
+                frame = get_frame()
+                read_end = time.monotonic_ns()
+                if frame is not None:
+                    metadata = CameraFrameMetadata(
+                        host_id=self._command_guard.host_id,
+                        camera=camera,
+                        frame_id=frame_id,
+                        read_started_monotonic_ns=read_start,
+                        read_completed_monotonic_ns=read_end,
+                        arm_state=state,
+                        arm_state_started_monotonic_ns=state_start,
+                        arm_state_completed_monotonic_ns=state_end,
                     )
+                    frame_id += 1
+                    jpeg = encode_jpeg(frame)
+                    publisher.put(encode_observation(metadata, jpeg))
+                    if self._settings.publish_legacy_camera_frames:
+                        legacy_publisher.put(jpeg)
+            except Exception:
+                logger.exception(f"Failed to publish {camera} camera observation")
+            self._stop_event.wait(0.03)
 
     def run(self):
+        self._stop_event.clear()
         with zenoh.open(create_zenoh_config(self._settings)) as session:
-            sub = session.declare_subscriber(constants.COMMAND_KEY, self._listener)
-            state_queryable = session.declare_queryable(
-                constants.ROBOT_STATE_KEY, self._listener_robot_state_query
-            )
-            arm_links_queryable = session.declare_queryable(
-                constants.ARM_LINKS_KEY, self._listener_arm_links_query
-            )
-            calibration_queryable = session.declare_queryable(
-                constants.ARM_CALIBRATION_KEY, self._listener_arm_calibration_query
-            )
-            pub_base_cam = session.declare_publisher(constants.BASE_CAMERA_KEY)
-            pub_arm_cam = session.declare_publisher(constants.ARM_CAMERA_KEY)
+            handles = []
+            camera_threads = []
             try:
                 with self._arm_lock:
+                    self._base_controller.stop()
                     self._reset_arm_smoother_locked()
-            except Exception as e:
-                logger.error(f"Error initializing arm smoother: {e}")
-                sub.undeclare()
-                state_queryable.undeclare()
-                arm_links_queryable.undeclare()
-                calibration_queryable.undeclare()
-                return
-            logger.info("Starting host controller node...")
-            try:
-                while True:
-                    start_time = time.time()
-                    with self._arm_lock:
-                        if (
-                            not self._maintenance_active
-                            and self._target_arm_command is not None
-                            and self._arm_smoother is not None
-                        ):
-                            q, _ = self._arm_smoother.step(self._target_arm_command)
-                            self._arm_controller.send_joint_action(q)
-                    # Publish camera frames
-                    base_frame = self._camera_controller.get_base_frame()
-                    arm_frame = self._camera_controller.get_arm_frame()
-                    if base_frame is not None:
-                        pub_base_cam.put(encode_jpeg(base_frame))
-                    if arm_frame is not None:
-                        pub_arm_cam.put(encode_jpeg(arm_frame))
-                    time.sleep(max(0, self._dt - (time.time() - start_time)))
+                handles.append(
+                    session.declare_subscriber(constants.COMMAND_KEY, self._listener)
+                )
+                for key, callback in (
+                    (constants.COMMAND_LEASE_KEY, self._listener_command_lease_query),
+                    (constants.ROBOT_STATE_KEY, self._listener_robot_state_query),
+                    (constants.ARM_LINKS_KEY, self._listener_arm_links_query),
+                    (
+                        constants.ARM_CALIBRATION_KEY,
+                        self._listener_arm_calibration_query,
+                    ),
+                ):
+                    handles.append(session.declare_queryable(key, callback))
+                for camera, key, legacy_key, enabled in (
+                    (
+                        "base",
+                        constants.BASE_OBSERVATION_KEY,
+                        constants.BASE_CAMERA_KEY,
+                        self._settings.base_camera_id is not None,
+                    ),
+                    (
+                        "arm",
+                        constants.ARM_OBSERVATION_KEY,
+                        constants.ARM_CAMERA_KEY,
+                        self._settings.arm_camera_id is not None,
+                    ),
+                ):
+                    if not enabled:
+                        continue
+                    publisher = session.declare_publisher(key)
+                    legacy = session.declare_publisher(legacy_key)
+                    handles.extend((publisher, legacy))
+                    thread = threading.Thread(
+                        target=self._camera_loop,
+                        args=(camera, publisher, legacy),
+                        daemon=True,
+                    )
+                    thread.start()
+                    camera_threads.append(thread)
+                logger.info("Starting host controller node...")
+                while not self._stop_event.is_set():
+                    started = time.monotonic()
+                    try:
+                        self._control_step()
+                    except Exception:
+                        logger.exception("Motor control step failed")
+                    self._stop_event.wait(
+                        max(0, self._dt - (time.monotonic() - started))
+                    )
             except KeyboardInterrupt:
                 pass
             finally:
-                sub.undeclare()
-                state_queryable.undeclare()
-                arm_links_queryable.undeclare()
-                calibration_queryable.undeclare()
+                self._stop_event.set()
+                with self._arm_lock:
+                    try:
+                        self._base_controller.stop()
+                    except Exception:
+                        logger.exception("Failed to stop base during shutdown")
+                    try:
+                        self._hold_arm_locked()
+                    except Exception:
+                        logger.exception("Failed to hold arm during shutdown")
+                for thread in camera_threads:
+                    thread.join(timeout=1.0)
+                for handle in reversed(handles):
+                    handle.undeclare()
+
+    def stop(self) -> None:
+        self._stop_event.set()
 
 
 class ClientControllerNode:
-    """Controller node that publishes commands to the host node.
-    """
+    """Controller node that publishes commands to the host node."""
 
     def __init__(
         self,
@@ -382,6 +559,12 @@ class ClientControllerNode:
         self.publisher = self.session.declare_publisher(constants.COMMAND_KEY)
         self._wait_for_matching = wait_for_matching
         self._matching_checked = not wait_for_matching
+        self._client_id = str(uuid4())
+        self._command_sequence = 0
+        self._lease = None
+        self._lease_refresh_at = 0.0
+        self._lease_validity_s = None
+        self._send_lock = threading.Lock()
 
     def _ensure_matching(self) -> None:
         if self._matching_checked or self.settings.zenoh_match_timeout <= 0:
@@ -397,10 +580,77 @@ class ClientControllerNode:
             f"Timed out waiting for a host subscriber on '{constants.COMMAND_KEY}'."
         )
 
-    def send_command(self, command: LekiwiCommand):
-        if self._wait_for_matching:
-            self._ensure_matching()
-        self.publisher.put(command.model_dump_json())
+    def _get_command_lease(self, validity_s: float):
+        now = time.monotonic()
+        if (
+            self._lease is not None
+            and now < self._lease_refresh_at
+            and self._lease_validity_s == validity_s
+        ):
+            return self._lease
+        request = CommandLeaseRequest(client_id=self._client_id, validity_s=validity_s)
+        started = time.monotonic()
+        replies = self.session.get(
+            constants.COMMAND_LEASE_KEY,
+            payload=request.model_dump_json(),
+            encoding=zenoh.Encoding.APPLICATION_JSON,
+            timeout=self.settings.command_query_timeout_s,
+        )
+        error = "No command-lease response; update the host to a lease-capable version."
+        for reply in replies:
+            if not reply.ok:
+                continue
+            response = CommandLeaseResponse.model_validate_json(
+                reply.ok.payload.to_string()
+            )
+            if response.ok and response.lease is not None:
+                lease = response.lease
+                if lease.client_id != self._client_id:
+                    raise RuntimeError("Host returned a lease for a different client.")
+                # Local duration only; never compare client and host clock values.
+                # A delayed reply is discarded without publishing a motor command.
+                remaining = (
+                    lease.expires_at_monotonic_ns - lease.issued_at_monotonic_ns
+                ) / 1e9
+                if time.monotonic() - started >= remaining:
+                    raise RuntimeError(
+                        "Command lease expired while waiting for the host."
+                    )
+                self._lease = lease
+                self._lease_validity_s = validity_s
+                self._lease_refresh_at = started + remaining / 2
+                return lease
+            error = response.error or "Host refused command lease."
+        raise RuntimeError(error)
+
+    def send_command(self, command: LekiwiCommand, *, validity_s: float | None = None):
+        """Publish with a host-issued deadline; repeated calls are new commands.
+
+        The publication is not an execution/completion acknowledgement. Reused
+        leases retain their original expiry, so validity_s is an upper bound.
+        """
+        with self._send_lock:
+            if self._wait_for_matching:
+                self._ensure_matching()
+            if command.envelope is not None:
+                raise ValueError(
+                    "send_command creates its own envelope; pass a plain command."
+                )
+            duration = (
+                validity_s
+                if validity_s is not None
+                else (
+                    self.settings.base_command_validity_s
+                    if command.base_command is not None
+                    else self.settings.command_validity_s
+                )
+            )
+            lease = self._get_command_lease(duration)
+            envelope = ControlEnvelope(lease=lease, sequence=self._command_sequence)
+            self._command_sequence += 1
+            self.publisher.put(
+                command.model_copy(update={"envelope": envelope}).model_dump_json()
+            )
 
     def send_base_command(self, command: BaseCommand):
         self.send_command(LekiwiCommand(base_command=command))
@@ -428,16 +678,29 @@ class ClientControllerNode:
 
 
 class ClientControllerWithCameraNode(ClientControllerNode):
-    """Controller node that publishes commands to the host node and receives camera frames.
-    """
+    """Controller node that publishes commands to the host node and receives camera frames."""
 
     def __init__(self, settings: Settings):
         super().__init__(settings=settings)
         self.settings = settings
-        self.sub_base_cam = self.session.declare_subscriber(constants.BASE_CAMERA_KEY, self._listener_base_cam)
-        self.sub_arm_cam = self.session.declare_subscriber(constants.ARM_CAMERA_KEY, self._listener_arm_cam)
         self.base_frame_queue = deque(maxlen=5)
         self.arm_frame_queue = deque(maxlen=5)
+        self._observations: dict[str, CameraObservation] = {}
+        self._observation_lock = threading.Lock()
+        self.sub_base_cam = self.session.declare_subscriber(
+            constants.BASE_CAMERA_KEY, self._listener_base_cam
+        )
+        self.sub_arm_cam = self.session.declare_subscriber(
+            constants.ARM_CAMERA_KEY, self._listener_arm_cam
+        )
+        self.sub_base_observation = self.session.declare_subscriber(
+            constants.BASE_OBSERVATION_KEY,
+            lambda msg: self._listener_observation("base", msg),
+        )
+        self.sub_arm_observation = self.session.declare_subscriber(
+            constants.ARM_OBSERVATION_KEY,
+            lambda msg: self._listener_observation("arm", msg),
+        )
         if rr is not None and settings.view_camera:
             rr.init("lekiwi_client_camera", spawn=settings.rerun_spawn)
 
@@ -450,6 +713,49 @@ class ClientControllerWithCameraNode(ClientControllerNode):
         binary_data = bytes(msg.payload)
         image = cv2.imdecode(np.frombuffer(binary_data, dtype=np.uint8), cv2.IMREAD_COLOR)
         self.arm_frame_queue.append(image)
+
+    def _listener_observation(self, camera: str, msg: zenoh.Sample) -> None:
+        try:
+            observation = decode_observation(bytes(msg.payload))
+            if observation.metadata.camera != camera:
+                raise ValueError("Observation camera does not match its topic.")
+            with self._observation_lock:
+                previous = self._observations.get(camera)
+                if (
+                    previous is not None
+                    and previous.metadata.host_id == observation.metadata.host_id
+                    and previous.metadata.frame_id >= observation.metadata.frame_id
+                ):
+                    return  # Duplicates must not reset receipt age.
+                self._observations[camera] = observation
+            queue = self.base_frame_queue if camera == "base" else self.arm_frame_queue
+            queue.append(observation.image)
+        except Exception as error:
+            logger.warning(f"Invalid {camera} camera observation: {error}")
+
+    def get_observation(
+        self,
+        camera: str,
+        *,
+        max_age_s: float | None = None,
+        after: tuple[str, int] | None = None,
+    ) -> CameraObservation | None:
+        """Get metadata + image; `after` is (host_id, frame_id), age is local receipt age."""
+        if camera not in ("base", "arm"):
+            raise ValueError("camera must be 'base' or 'arm'.")
+        with self._observation_lock:
+            observation = self._observations.get(camera)
+        if observation is None:
+            return None
+        if max_age_s is not None and not observation.is_fresh(max_age_s):
+            return None
+        if (
+            after is not None
+            and observation.metadata.host_id == after[0]
+            and observation.metadata.frame_id <= after[1]
+        ):
+            return None
+        return observation
 
     def get_base_frame(self) -> np.ndarray | None:
         return self.base_frame_queue[-1] if len(self.base_frame_queue) > 0 else None
@@ -468,6 +774,13 @@ class ClientControllerWithCameraNode(ClientControllerNode):
             rr.log("arm_camera", rr.Image(self.arm_frame_queue[-1][..., ::-1]))
 
     def close(self) -> None:
+        for name in ("sub_base_observation", "sub_arm_observation"):
+            subscriber = getattr(self, name, None)
+            if subscriber is not None:
+                try:
+                    subscriber.undeclare()
+                except Exception:
+                    pass
         sub_base_cam = getattr(self, "sub_base_cam", None)
         if sub_base_cam is not None:
             try:

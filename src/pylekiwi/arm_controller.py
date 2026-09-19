@@ -1,4 +1,5 @@
 import os
+from copy import deepcopy
 
 import numpy as np
 from loguru import logger
@@ -60,23 +61,46 @@ class ArmController:
         )
         self._chain_joint_names = tuple(self.chain.get_joint_parameter_names())
 
-    def forward_kinematics(self, joint_angles: tuple[float, float, float, float, float]) -> Transform:
-        return self.chain.forward_kinematics(list(joint_angles) + [0.0])  # add gripper joint angle
+    def forward_kinematics(
+        self,
+        joint_angles: tuple[float, float, float, float, float],
+        gripper_position: float = 0.0,
+    ) -> Transform:
+        return self.chain.forward_kinematics([*joint_angles, gripper_position])
 
     def inverse_kinematics(
         self,
         transform: Transform,
         initial_state: np.ndarray | None = None,
+        *,
+        gripper_position: float = 0.0,
     ) -> tuple[float, float, float, float, float]:
-        if len(initial_state) == len(self.JOINT_IDS):
-            initial_state = np.r_[initial_state, 0]
-        return tuple(
-            float(v)
-            for v in self.chain.inverse_kinematics(
-                transform,
-                initial_state=initial_state,
-            )[:-1]   # exclude gripper joint
-        )
+        """Use kinpy IK with the gripper fixed at the commanded opening (radians)."""
+        if initial_state is not None:
+            initial_state = np.asarray(initial_state, dtype=float)
+            if initial_state.shape == (6,):
+                initial_state = initial_state[:5]
+            if initial_state.shape != (5,) or not np.isfinite(initial_state).all():
+                raise ValueError("IK initial_state must contain five finite arm angles.")
+        if not np.isfinite(gripper_position) or not np.isfinite(transform.matrix()).all():
+            raise ValueError("IK target and gripper position must be finite.")
+
+        # Use a separate chain so FK/link queries retain the real gripper joint.
+        ik_chain = deepcopy(self.chain)
+        gripper = next(frame for frame in ik_chain if frame.joint.name == "gripper")
+        gripper.joint.offset = gripper.get_transform(gripper_position)
+        gripper.joint.joint_type = "fixed"
+        result = ik_chain.inverse_kinematics(transform, initial_state=initial_state)
+
+        # kinpy returns an approximate solution even when a pose is unreachable.
+        actual = ik_chain.forward_kinematics(result)
+        rotation = transform.matrix()[:3, :3].T @ actual.matrix()[:3, :3]
+        angle_error = np.arccos(np.clip((np.trace(rotation) - 1) / 2, -1, 1))
+        if (not np.isfinite(result).all()
+                or np.linalg.norm(actual.pos - transform.pos) > 0.001
+                or angle_error > np.deg2rad(1.0)):
+            raise ValueError("IK target cannot be reached within 1 mm / 1 degree.")
+        return tuple(float(v) for v in result)
 
     def set_torque(self):
         for i in self.JOINT_IDS:
@@ -197,9 +221,19 @@ class ArmController:
         *,
         target_xyz: np.ndarray,
         gripper_position: float | None,
+        current_state: ArmState | None = None,
     ) -> ArmJointCommand:
-        current_state = self.get_current_state()
-        current_ee = self.forward_kinematics(current_state.joint_angles)
+        current_state = current_state or self.get_current_state()
+        opening = (
+            gripper_position
+            if gripper_position is not None
+            else current_state.gripper_position
+        )
+        if opening is None:
+            raise ValueError("Gripper state is required for Cartesian commands.")
+        # Preserve the arm's orientation at the commanded opening. Opening the
+        # jaw alone must not cause compensating wrist/arm motion.
+        current_ee = self.forward_kinematics(current_state.joint_angles, opening)
         target_ee = Transform(
             rot=np.asarray(current_ee.rot, dtype=float),
             pos=target_xyz,
@@ -207,36 +241,39 @@ class ArmController:
         target_joints = self.inverse_kinematics(
             target_ee,
             initial_state=np.asarray(current_state.joint_angles, dtype=float),
+            gripper_position=opening,
         )
         return ArmJointCommand(
             joint_angles=target_joints,
-            gripper_position=(
-                gripper_position
-                if gripper_position is not None
-                else current_state.gripper_position
-            ),
+            gripper_position=opening,
         )
 
     def resolve_ee_position_action(
-        self, action: ArmEEPositionCommand
+        self, action: ArmEEPositionCommand, *, current_state: ArmState | None = None
     ) -> ArmJointCommand:
         return self._resolve_ee_target(
             target_xyz=np.asarray(action.xyz, dtype=float),
             gripper_position=action.gripper_position,
+            current_state=current_state,
         )
 
     def send_ee_position_action(self, action: ArmEEPositionCommand):
         self.send_joint_action(self.resolve_ee_position_action(action))
 
     def resolve_ee_inching_action(
-        self, action: ArmEEInchingCommand
+        self, action: ArmEEInchingCommand, *, current_state: ArmState | None = None
     ) -> ArmJointCommand:
-        current_state = self.get_current_state()
-        current_ee = self.forward_kinematics(current_state.joint_angles)
+        current_state = current_state or self.get_current_state()
+        if current_state.gripper_position is None:
+            raise ValueError("Gripper state is required for Cartesian commands.")
+        current_ee = self.forward_kinematics(
+            current_state.joint_angles, current_state.gripper_position
+        )
         return self._resolve_ee_target(
             target_xyz=np.asarray(current_ee.pos, dtype=float)
             + np.asarray(action.delta_xyz, dtype=float),
             gripper_position=action.gripper_position,
+            current_state=current_state,
         )
 
     def send_ee_inching_action(self, action: ArmEEInchingCommand):

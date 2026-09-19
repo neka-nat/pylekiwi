@@ -114,3 +114,6 @@ uvx pylekiwi client --host <your robot ip> --port 7447 state
 uvx pylekiwi client --host <your robot ip> --port 7447 capture --camera base --output photo.jpg
 uvx pylekiwi client --host <your robot ip> --port 7447 position --x-mm 180 --y-mm 0 --z-mm 120
 ```
+
+For timestamped camera observations, command expiry, and IK usage, see
+[Robot control](docs/robot-control.md).

@@ -4,6 +4,10 @@ from pylekiwi.models import ArmJointCommand
 
 
 class Settings(BaseModel):
+    command_validity_s: float = Field(default=5.0, gt=0, le=60, allow_inf_nan=False)
+    base_command_validity_s: float = Field(default=0.5, gt=0, le=5, allow_inf_nan=False)
+    command_query_timeout_s: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+    publish_legacy_camera_frames: bool = True
     serial_port: str = "/dev/ttyACM0"
     baudrate: int = 1000000
     timeout: float = 0.5
@@ -29,6 +33,9 @@ class Constants(BaseModel):
         gripper_position=600.0,
     )
     COMMAND_KEY: str = "lekiwi/command"
+    COMMAND_LEASE_KEY: str = "lekiwi/control/lease"
+    BASE_OBSERVATION_KEY: str = "lekiwi/camera/base/observation"
+    ARM_OBSERVATION_KEY: str = "lekiwi/camera/arm/observation"
     ROBOT_STATE_KEY: str = "lekiwi/state"
     ARM_LINKS_KEY: str = "lekiwi/arm/links"
     BASE_CAMERA_KEY: str = "lekiwi/camera/base"
