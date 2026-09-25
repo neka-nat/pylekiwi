@@ -11,8 +11,8 @@ class Settings(BaseModel):
     serial_port: str = "/dev/ttyACM0"
     baudrate: int = 1000000
     timeout: float = 0.5
-    base_camera_id: int | None = 0
-    arm_camera_id: int | None = 2
+    base_camera_id: int | str | None = 0
+    arm_camera_id: int | str | None = 2
     view_camera: bool = True
     rerun_spawn: bool = True
     zenoh_mode: str | None = None

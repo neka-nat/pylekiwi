@@ -12,7 +12,11 @@ def encode_jpeg(frame: np.ndarray, quality: int = 80) -> bytes:
 
 
 class CameraController:
-    def __init__(self, base_camera_id: int | None = None, arm_camera_id: int | None = None):
+    def __init__(
+        self,
+        base_camera_id: int | str | None = None,
+        arm_camera_id: int | str | None = None,
+    ):
         self.cap_base = None
         self.cap_arm = None
         if base_camera_id is not None:

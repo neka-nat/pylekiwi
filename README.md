@@ -31,6 +31,25 @@ sudo chmod 666 <your_follower_robot_serial_port>
 uvx pylekiwi host --serial-port <your_follower_robot_serial_port>
 ```
 
+The host defaults to camera index `0` for `base` and `2` for `arm`. If the
+images are swapped, specify the assignments when starting the host:
+
+```bash
+uvx pylekiwi host --serial-port <your_follower_robot_serial_port> --base-camera-id 2 --arm-camera-id 0
+```
+
+Both options also accept device paths. On Linux, use the actual links under
+`/dev/v4l/by-id/` to keep the assignments when `/dev/videoN` numbering changes.
+If identical cameras do not have unique IDs, use `/dev/v4l/by-path/` links and
+keep each camera connected to the same USB port:
+
+```bash
+ls -l /dev/v4l/by-id/ /dev/v4l/by-path/
+uvx pylekiwi host --serial-port <your_follower_robot_serial_port> \
+  --base-camera-id /dev/v4l/by-id/<base-camera-link> \
+  --arm-camera-id /dev/v4l/by-id/<arm-camera-link>
+```
+
 Run the following command to start the leader node (client) on the remote machine:
 
 ```bash
