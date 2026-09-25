@@ -43,23 +43,26 @@
       <!-- Frame baseframe -->
       <site group="3" name="baseframe" pos="8.67362e-19 9.55596e-18 3.46945e-18" quat="1 -8.17396e-19 3.78392e-17 2.22045e-16"/>
       <!-- LeKiwi-specific fixed frames.
-           The chassis and base-camera transforms are derived from the public LeKiwi URDF/CAD.
-           The upstream arm root is aligned to this SO101 MJCF by matching the shoulder-pan
-           joint frame, so the arm kinematics stay unchanged while chassis-side frames become
-           queryable from FK. -->
+           The chassis and base-camera transforms are derived from the public LeKiwi URDF/CAD
+           by examples/lekiwi_cad_transforms.py. The upstream CAD is aligned to this SO101 MJCF
+           by physical features, not joint frames whose zero angles differ: the shoulder-pan
+           axes coincide, both arms reach forward (toward the front camera) at zero pan, and
+           the SO101 arm base rests on the upstream arm-base plate. The arm kinematics stay
+           unchanged while chassis-side frames become queryable from FK. -->
       <body name="lekiwi_arm_mount" pos="0 0 0" quat="1 0 0 0">
         <site group="3" name="lekiwi_arm_mount_frame" pos="0 0 0" quat="1 0 0 0"/>
         <!-- `lekiwi_chassis` reuses the upstream `base_plate_layer1-v5` CAD frame. -->
-        <body name="lekiwi_chassis" pos="0.0388353 0.067148 -0.057" quat="0 0 0 1">
+        <body name="lekiwi_chassis" pos="-0.02831271 -0.00000001 -0.0594" quat="0.70710678 0 0 -0.70710678">
           <site group="3" name="lekiwi_chassis_frame" pos="0 0 0" quat="1 0 0 0"/>
           <!-- `lekiwi_base_camera_mount` uses the upstream `Camera-Model-v3` CAD link
                frame. `lekiwi_base_camera_optical` is a CAD-derived approximation of the
-               lens-front center expressed in the camera mesh frame. -->
+               lens-front center expressed in the camera mesh frame, which looks along +z
+               with +y toward the image bottom. -->
           <body name="lekiwi_base_camera_mount" pos="-0.014 0.10636666 0.03831948" quat="-0.642788 0 0.766044 0">
             <site group="3" name="lekiwi_base_camera_frame" pos="0 0 0" quat="1 0 0 0"/>
             <body name="lekiwi_base_camera_optical" pos="-0.01213896 0.02356984 -0.01207555" quat="0.492404 -0.413176 0.586824 0.492404">
               <site group="3" name="lekiwi_base_camera_optical_frame" pos="0 0 0" quat="1 0 0 0"/>
-              <camera name="lekiwi_base_camera" pos="0 0 0" quat="0 0 1 0" fovy="70"/>
+              <camera name="lekiwi_base_camera" pos="0 0 0" quat="0 1 0 0" fovy="70"/>
             </body>
           </body>
         </body>
